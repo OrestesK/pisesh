@@ -32,6 +32,7 @@
   "files": [
     "bin/",
     "extensions/",
+    "lib/",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
@@ -46,7 +47,10 @@
     "image": "https://raw.githubusercontent.com/Blue-B/pisesh/main/assets/preview.png"
   },
   "scripts": {
-    "test": "node --check bin/pisesh && echo 'pisesh: syntax OK'",
+    "test": "node --check bin/pisesh && node --check lib/cleanup.js && node --test test/current-session.test.mjs test/cleanup.test.mjs test/extension-load.test.mjs && echo 'pisesh: syntax, current-session, cleanup, and extension load behavior OK'",
     "prepublishOnly": "npm test"
+  },
+  "devDependencies": {
+    "jiti": "^2.7.0"
   }
 }

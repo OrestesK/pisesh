@@ -7,6 +7,15 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **Resume no longer crashes on sessions interrupted mid-tool-call.** If a session ended while a tool call was still in flight (e.g. an image generation cut off by a usage limit or a closed window), its transcript held a tool call with no recorded result. On resume, pi would re-fire that dead tool and the spawned process could exit non-zero — surfacing as `pisesh exited with code 1`, repeatedly. `resumeSession` now heals the target session first: every orphaned tool call gets a synthetic `[interrupted]` result injected before pi is spawned, so the resumed history is always well-formed and no dead tool is re-run. Idempotent, never throws, and writes a one-time `.bak-orphanheal` backup of the session before modifying it.
 
+## [0.1.9-orestes.0] — 2026-06-11
+
+### Added
+- Local config patch: `X` opens a type-to-confirm cleanup preview for the selected session. Cleanup removes the selected session JSONL, pisesh metadata entries, and known associated Pi artifacts only.
+- Cleanup is blocked for the attached `[NOW]` session and uses trash (`trash`, `trash-put`, or `gio trash`) before falling back to direct deletion.
+
+### Changed
+- The `/sesh` extension in this local package spawns the vendored `bin/pisesh` script directly instead of resolving `pisesh` from `$PATH`.
+
 ## [0.1.9] — 2026-06-03
 
 ### Fixed
@@ -31,7 +40,7 @@ Initial release.
 - Star / unstar with `f` or Space; favorites persist to `~/.pi/agent/favorites.json`
 - Search across id / project / first user prompt with `/`
 - Session details view (`d`): full prompt, file path, byte size, timestamps
-- `Enter` resumes the selected session via `pi --session <id> --session-dir <dir>` in the original cwd
+- `Enter` resumes a different selected session via `pi --session <session-file> --session-dir <dir>`; selecting `[NOW]` exits back to the current Pi without spawning a nested owner
 - `[NOW]` badge marks the session belonging to the pi instance that spawned pisesh (set via `PISESH_CURRENT_SESSION` env var)
 - Alternate screen buffer (`\x1b[?1049h`) — exit restores terminal byte-for-byte; no scrollback pollution
 - CJK-aware truncation and padding (Hangul / CJK ideographs / emoji counted as 2 cells)
