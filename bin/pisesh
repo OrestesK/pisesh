@@ -12,6 +12,7 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 const readline = require('readline');
+const { collectCleanupPlan, performCleanupPlan } = require('../lib/cleanup.js');
 
 // ── Paths ─────────────────────────────────────────────
 const HOME = os.homedir();
@@ -23,10 +24,12 @@ const META_FILE = path.join(HOME, '.pi/agent/pisesh-meta.json');
 // flag the currently-attached session in the list with a [NOW] badge.
 const CURRENT_SESSION_ID = (process.env.PISESH_CURRENT_SESSION || '').trim();
 
+function safeProcessCwd() { try { return process.cwd(); } catch { return ''; } }
+
 // Directory pisesh was launched from. The /sesh extension forwards pi's cwd
 // via PISESH_CWD; falling back to process.cwd() keeps standalone use working.
 // Drives the "Here" tab (sessions whose effective cwd matches this dir).
-const CURRENT_CWD = (process.env.PISESH_CWD || process.cwd() || '').replace(/\/+$/, '');
+const CURRENT_CWD = (process.env.PISESH_CWD || safeProcessCwd() || '').replace(/\/+$/, '');
 
 // ── ANSI ──────────────────────────────────────────────
 const A = {
@@ -231,7 +234,11 @@ let tabs = ['★ Favorites', 'Today', 'Here', 'All'];
 let tabIdx = 0;
 let cursor = 0;
 let filter = '';
-let mode = 'list';      // list | filter | details | edit | browse
+let mode = 'list';      // list | filter | details | edit | browse | cleanup
+let statusMessage = '';
+let cleanupTarget = null;
+let cleanupPlan = null;
+let cleanupBuffer = '';
 // edit mode state (title text editor)
 let editField = '';     // 'title' | 'cwd'
 let editBuffer = '';
@@ -366,6 +373,7 @@ function render() {
   if (mode === 'edit') return renderEdit();
   if (mode === 'browse') return renderBrowse();
   if (mode === 'details') return renderDetails();
+  if (mode === 'cleanup') return renderCleanup();
   renderList();
 }
 
@@ -387,6 +395,11 @@ function renderList() {
   out += tabLine + '\n';
   out += A.gry + '─'.repeat(Math.max(1, W - 1)) + A.R + '\n';
 
+  if (statusMessage) {
+    out += ' ' + A.yel + trunc(statusMessage, W - 4) + A.R + '\n';
+    out += A.gry + '─'.repeat(Math.max(1, W - 1)) + A.R + '\n';
+  }
+
   // Filter line
   if (mode === 'filter' || filter) {
     const caret = mode === 'filter' ? A.I + ' ' + A.R : '';
@@ -398,7 +411,7 @@ function renderList() {
   const list = visibleSessions();
   if (cursor >= list.length) cursor = Math.max(0, list.length - 1);
 
-  const headerH = (mode === 'filter' || filter) ? 7 : 5;
+  const headerH = (mode === 'filter' || filter) ? (statusMessage ? 9 : 7) : (statusMessage ? 7 : 5);
   const footerH = 4;
   const usable = Math.max(3, H - headerH - footerH);
   const start = Math.max(0, Math.min(cursor - Math.floor(usable / 2), list.length - usable));
@@ -454,6 +467,7 @@ function renderList() {
       + A.D + 'e' + A.R + ' edit name  '
       + A.D + 'p' + A.R + ' edit cwd  '
       + A.D + 'd' + A.R + ' details  '
+      + A.D + 'X' + A.R + ' cleanup  '
       + A.D + '/' + A.R + ' search  '
       + A.D + 'q' + A.R + ' quit' + A.R + '\n';
 
@@ -537,8 +551,48 @@ function renderDetails() {
       + A.D + 'e' + A.R + ' edit name  '
       + A.D + 'p' + A.R + ' edit cwd  '
       + A.D + 'c' + A.R + ' copy id  '
+      + A.D + 'X' + A.R + ' cleanup  '
       + A.D + 'Esc/d/q' + A.R + ' back' + A.R + '\n';
 
+  process.stdout.write(out);
+}
+
+function renderCleanup() {
+  const W = process.stdout.columns || 100;
+  const H = process.stdout.rows || 30;
+  const s = cleanupTarget;
+  const plan = cleanupPlan;
+  let out = A.clr;
+  out += ' ' + A.B + A.red + 'pisesh cleanup' + A.R + A.D + '  known artifacts only' + A.R + '\n\n';
+  if (!s || !plan) { out += ' (no cleanup target)\n'; process.stdout.write(out); return; }
+
+  const row = (k, v, color = A.R) => ` ${A.D}${pad(k, 11)}${A.R} ${color}${v}${A.R}\n`;
+  out += row('id', s.id, A.cyn);
+  out += row('title', trunc(s.title, W - 16));
+  out += row('jsonl', s.file, A.gry);
+  out += row('items', String(plan.items.length));
+  out += row('total', fmtSize(plan.totalSize));
+  out += '\n';
+
+  if (plan.blocked) {
+    out += ' ' + A.red + plan.blockReason + A.R + '\n\n';
+    out += ' ' + A.D + 'Esc/q' + A.R + ' back\n';
+    process.stdout.write(out);
+    return;
+  }
+
+  out += ' ' + A.D + 'Will remove the selected session JSONL, pisesh metadata entries, and these known associated artifacts:' + A.R + '\n';
+  const usable = Math.max(4, H - 16);
+  for (const item of plan.items.slice(0, usable)) {
+    const line = `${fmtSize(item.size).padStart(8)}  ${item.type}  ${item.path}`;
+    out += '   ' + trunc(line, W - 6) + '\n';
+  }
+  if (plan.items.length > usable) out += '   ' + A.D + `… ${plan.items.length - usable} more` + A.R + '\n';
+
+  out += '\n' + A.red + ' This is destructive. It does not remove arbitrary project files mentioned by the conversation.' + A.R + '\n';
+  out += ' Type ' + A.B + 'DELETE' + A.R + ' then Enter to confirm: ' + cleanupBuffer + A.I + ' ' + A.R + '\n';
+  out += '\n' + A.gry + '─'.repeat(Math.max(1, W - 1)) + A.R + '\n';
+  out += ' ' + A.D + 'Enter' + A.R + ' confirm when input is DELETE  ' + A.D + 'Esc/q' + A.R + ' cancel' + '\n';
   process.stdout.write(out);
 }
 
@@ -571,6 +625,7 @@ function setupInput() {
       else if (mode === 'edit') handleEdit(str, key);
       else if (mode === 'browse') handleBrowse(str, key);
       else if (mode === 'details') handleDetails(str, key);
+      else if (mode === 'cleanup') handleCleanup(str, key);
       else handleList(str, key);
       render();
     } catch (e) {
@@ -620,6 +675,7 @@ function handleList(str, key) {
   }
   else if (k === 'return') resumeSession(list[cursor]);
   else if (k === 'd') { if (list[cursor]) mode = 'details'; }
+  else if (str === 'X') startCleanup(list[cursor]);
   else if (k === 'e') startEdit(list[cursor], 'title');
   else if (k === 'p') startBrowse(list[cursor]);
   else if (str === '/') { mode = 'filter'; }
@@ -655,6 +711,42 @@ function handleDetails(str, key) {
   }
   if (k === 'e' && s) startEdit(s, 'title');
   if (k === 'p' && s) startBrowse(s);
+  if (str === 'X' && s) startCleanup(s);
+}
+
+function startCleanup(s) {
+  if (!s) return;
+  statusMessage = '';
+  cleanupTarget = s;
+  cleanupPlan = collectCleanupPlan(s);
+  cleanupBuffer = '';
+  if (cleanupPlan.blocked) {
+    statusMessage = cleanupPlan.blockReason;
+    mode = 'list';
+    return;
+  }
+  mode = 'cleanup';
+}
+
+function handleCleanup(str, key) {
+  const k = key.name;
+  if (k === 'escape' || k === 'q') { mode = 'list'; cleanupTarget = null; cleanupPlan = null; cleanupBuffer = ''; statusMessage = ''; return; }
+  if (key.ctrl && k === 'c') return quit();
+  if (k === 'backspace') { cleanupBuffer = cleanupBuffer.slice(0, -1); return; }
+  if (key.ctrl && k === 'u') { cleanupBuffer = ''; return; }
+  if (k === 'return') {
+    if (cleanupBuffer === 'DELETE' && cleanupPlan && !cleanupPlan.blocked) {
+      const result = performCleanupPlan(cleanupPlan);
+      statusMessage = result.ok
+        ? `Cleanup removed ${result.deleted.length} item(s)${result.metadataChanged ? ' and metadata' : ''}`
+        : `Cleanup failed for ${result.failed.length} item(s)`;
+      sessions = scanSessions();
+      cursor = Math.min(cursor, Math.max(0, visibleSessions().length - 1));
+      mode = 'list'; cleanupTarget = null; cleanupPlan = null; cleanupBuffer = '';
+    }
+    return;
+  }
+  if (str && str.length === 1 && !key.ctrl) cleanupBuffer += str;
 }
 
 // Open the inline editor for a session's title or cwd, seeded with the
@@ -728,17 +820,23 @@ function listDirs(dir) {
 function buildBrowse(dir) {
   let d = dir || '/';
   // Walk up until we hit something that exists and is a directory.
-  while (d && d !== '/' && (!fs.existsSync(d) || !safeIsDir(d))) d = path.dirname(d);
+  while (d && !isRootPath(d) && (!fs.existsSync(d) || !safeIsDir(d))) {
+    const parent = path.dirname(d);
+    if (parent === d) break;
+    d = parent;
+  }
   if (!fs.existsSync(d)) d = '/';
   browseDir = path.resolve(d);
   const entries = [{ label: '[· use THIS directory]', kind: 'use', path: browseDir }];
-  if (browseDir !== '/') entries.push({ label: '..  (parent)', kind: 'up', path: path.dirname(browseDir) });
+  if (!isRootPath(browseDir)) entries.push({ label: '..  (parent)', kind: 'up', path: path.dirname(browseDir) });
   for (const name of listDirs(browseDir)) entries.push({ label: name + '/', kind: 'dir', path: path.join(browseDir, name) });
   browseEntries = entries;
   browseSel = 0;
 }
 
 function safeIsDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
+function firstExistingDir(...candidates) { return candidates.find((p) => p && safeIsDir(p)) || path.parse(safeProcessCwd() || path.sep).root || path.sep; }
+function isRootPath(p) { return path.resolve(p) === path.parse(path.resolve(p)).root; }
 
 // Enter the cwd picker for a session, seeded at its current effective cwd.
 function startBrowse(s) {
@@ -767,7 +865,7 @@ function handleBrowse(str, key) {
   else if (k === 'home') browseSel = 0;
   else if (k === 'end') browseSel = browseEntries.length - 1;
   // Left / h: go to parent directory.
-  else if (k === 'left' || k === 'h') { if (browseDir !== '/') buildBrowse(path.dirname(browseDir)); }
+  else if (k === 'left' || k === 'h') { if (!isRootPath(browseDir)) buildBrowse(path.dirname(browseDir)); }
   // Right / l / Enter: open the highlighted dir (or commit if it's the
   // "use THIS directory" / parent row).
   else if (k === 'right' || k === 'l' || k === 'return') {
@@ -891,6 +989,10 @@ function healOrphanedToolCalls(file) {
 
 function resumeSession(s) {
   if (!s) return;
+  if (CURRENT_SESSION_ID && s.id === CURRENT_SESSION_ID) {
+    quit();
+    return;
+  }
   // Heal orphaned tool calls before handing off, so resume can't crash the
   // spawned pi (see healOrphanedToolCalls).
   try { healOrphanedToolCalls(s.file); } catch {}
@@ -904,9 +1006,9 @@ function resumeSession(s) {
   // Resume in the session's effective cwd (user override wins over recorded),
   // falling back to pisesh's own cwd if that directory no longer exists.
   const targetCwd = s.effectiveCwd;
-  const child = spawn('pi', ['--session', s.id, '--session-dir', projectDir], {
+  const child = spawn('pi', ['--session', s.file, '--session-dir', projectDir], {
     stdio: 'inherit',
-    cwd: targetCwd && fs.existsSync(targetCwd) ? targetCwd : process.cwd(),
+    cwd: firstExistingDir(targetCwd, CURRENT_CWD, safeProcessCwd(), projectDir),
   });
   child.on('exit', code => process.exit(code || 0));
   child.on('error', err => {
@@ -931,7 +1033,7 @@ function printHelp() {
 Usage:
   pisesh                 Open interactive TUI
   pisesh --list, -l      List starred session IDs (one per line)
-  pisesh --json          Dump favorites file as JSON
+  pisesh --json          Print current favorites set as JSON
   pisesh --star <id>     Add a session id (partial UUID ok) to favorites
   pisesh --unstar <id>   Remove a session id from favorites
   pisesh --help, -h      This help
@@ -940,12 +1042,16 @@ TUI keys:
   ↑↓ / j k         move cursor
   Tab / h l        switch tab  (★ Favorites → Today → Here → All)
   f / Space        toggle favorite
-  Enter            resume session (spawns 'pi --session …' in its cwd)
+  X                cleanup selected session and known artifacts (type DELETE to confirm)
+  Enter            resume another session (spawns 'pi --session <session-file> --session-dir <dir>');
+                   selecting [NOW] exits back to the current pi
   e                edit name (custom display title)
   p                edit cwd — arrow-key directory browser
                    (↑↓ move, →/Enter open dir, ← parent, s select, Esc cancel)
-                   sets the working directory used on resume / "Here" tab
+                   sets cwd metadata for the "Here" tab / spawned process cwd
   d                show details
+  c                copy session id to clipboard (details view)
+  Home/End/PgUp/PgDn jump to top / bottom / ±10
   /                search (id / project / prompt / title)
   r                rescan session files
   q / Esc / Ctrl-C quit

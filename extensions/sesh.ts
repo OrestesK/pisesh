@@ -5,33 +5,42 @@
  *
  * Behavior:
  *   1. Pauses pi's TUI (releases the terminal)
- *   2. Spawns the external `pisesh` TUI (bookmark/resume picker)
+ *   2. Spawns this package's vendored `bin/pisesh` TUI (bookmark/resume picker)
  *   3. When pisesh exits — whether the user resumed a nested session and quit it,
  *      or just pressed `q` — control returns to the original pi session and the
  *      TUI is restored.
  *
- * Companion CLI tool: ~/.pi/bin/pisesh   (single-file Node TUI, no deps)
+ * Companion CLI tool: ../bin/pisesh   (single-file Node TUI, no deps)
  * Favorites file:     ~/.pi/agent/favorites.json
  */
 
 import { spawn } from "node:child_process";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+type NotifyLevel = "info" | "warning" | "error";
+type PiseshTui = { stop(): void; start(): void; requestRender(force?: boolean): void };
+type CommandContext = { hasUI: boolean; cwd: string; sessionManager?: { getSessionId?: () => string | undefined }; ui: { notify(message: string, level: NotifyLevel): void; custom<T>(render: (tui: PiseshTui, theme: unknown, kb: unknown, done: (value: T) => void) => unknown): Promise<T> } };
+type ExtensionAPI = { registerCommand(name: string, spec: { description: string; handler: (args: string[], ctx: CommandContext) => Promise<void> }): void };
+
+const PISESH_BIN = resolve(dirname(fileURLToPath(import.meta.url)), "..", "bin", "pisesh");
 
 function runPisesh(
 	currentSessionId: string | undefined,
+	cwd: string,
 ): Promise<number | null> {
 	return new Promise((resolve) => {
 		// stdio:"inherit" hands the real TTY to pisesh. pi's tui.stop() has
 		// already detached so this is safe.
 		// PISESH_CURRENT_SESSION lets pisesh flag the row that belongs to the
 		// pi instance that just spawned it (rendered with a [NOW] badge).
-		const child = spawn("pisesh", [], {
+		const child = spawn(process.execPath, [PISESH_BIN], {
 			stdio: "inherit",
 			env: {
 				...process.env,
-				// Forward pi's cwd so pisesh's "Here" tab can show only the sessions
-				// that belong to the directory this pi instance is attached to.
-				PISESH_CWD: process.cwd(),
+				// Forward the active pi session cwd so pisesh's "Here" tab can show only
+				// the sessions that belong to the directory this pi instance is attached to.
+				PISESH_CWD: cwd,
 				...(currentSessionId
 					? { PISESH_CURRENT_SESSION: currentSessionId }
 					: {}),
@@ -41,7 +50,7 @@ function runPisesh(
 		child.on("error", (err) => {
 			// Surface a readable error in the terminal before we re-render.
 			process.stdout.write(
-				`\x1b[31mpisesh failed to launch: ${err.message}\x1b[0m\n`,
+				`\x1b[31mlocal pisesh failed to launch: ${err.message}\x1b[0m\n`,
 			);
 			resolve(127);
 		});
@@ -63,6 +72,13 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				currentId = undefined;
 			}
+			if (!currentId) {
+				ctx.ui.notify(
+					"/sesh could not identify the current session; session picker was not opened",
+					"error",
+				);
+				return;
+			}
 
 			const code = await ctx.ui.custom<number | null>(
 				(tui, _theme, _kb, done) => {
@@ -70,7 +86,7 @@ export default function (pi: ExtensionAPI) {
 					tui.stop();
 					process.stdout.write("\x1b[2J\x1b[H");
 
-					runPisesh(currentId).then((exitCode) => {
+					runPisesh(currentId, ctx.cwd).then((exitCode) => {
 						// Restore pi's TUI
 						tui.start();
 						tui.requestRender(true);
@@ -85,7 +101,7 @@ export default function (pi: ExtensionAPI) {
 			if (code === 0 || code === null) {
 				ctx.ui.notify("Returned from pisesh", "info");
 			} else if (code === 127) {
-				ctx.ui.notify("pisesh not found on PATH", "error");
+				ctx.ui.notify("local pisesh failed to launch", "error");
 			} else {
 				ctx.ui.notify(`pisesh exited with code ${code}`, "warning");
 			}
