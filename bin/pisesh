@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // pisesh — pi session bookmark & resume TUI
 // Tabs: ★ Favorites / Today / Here / All
-// Storage: ~/.pi/agent/favorites.json   (starred session ids)
-//          ~/.pi/agent/pisesh-meta.json (per-session title / cwd overrides)
-// Sessions: ~/.pi/agent/sessions/<projectSlug>/<ts>_<uuid>.jsonl
+// Storage: $PI_CODING_AGENT_DIR/favorites.json   (or ~/.pi/agent/)
+//          $PI_CODING_AGENT_DIR/pisesh-meta.json (per-session title / cwd overrides)
+// Sessions: $PI_CODING_AGENT_DIR/sessions/<projectSlug>/<ts>_<uuid>.jsonl
 
 'use strict';
 
@@ -16,9 +16,13 @@ const { collectCleanupPlan, performCleanupPlan } = require('../lib/cleanup.js');
 
 // ── Paths ─────────────────────────────────────────────
 const HOME = os.homedir();
-const SESSIONS_ROOT = path.join(HOME, '.pi/agent/sessions');
-const FAV_FILE = path.join(HOME, '.pi/agent/favorites.json');
-const META_FILE = path.join(HOME, '.pi/agent/pisesh-meta.json');
+const configuredAgentDir = process.env.PI_CODING_AGENT_DIR;
+const AGENT_DIR = configuredAgentDir
+  ? configuredAgentDir.replace(/^~(?=$|[\\/])/, HOME)
+  : path.join(HOME, '.pi', 'agent');
+const SESSIONS_ROOT = path.join(AGENT_DIR, 'sessions');
+const FAV_FILE = path.join(AGENT_DIR, 'favorites.json');
+const META_FILE = path.join(AGENT_DIR, 'pisesh-meta.json');
 
 // Current session id (set by the /sesh extension before spawning). Lets us
 // flag the currently-attached session in the list with a [NOW] badge.
