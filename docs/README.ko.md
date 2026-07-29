@@ -24,19 +24,11 @@
 
 TUI가 실제로 어떻게 보이는지 화면별로 보여드립니다. 아래 데이터는 실제 세션이 아니라 지어낸 예시입니다.
 
-**메인 목록.** 하이라이트된 행이 현재 선택이고, `Tab`으로 탭을 순환합니다. 초록 `[NOW]` 배지는 지금 띄운 pi 세션을, 청록 `✎`는 직접 이름을 바꾼 세션을 나타냅니다. 한글 제목도 컬럼 정렬이 유지됩니다:
+**메인 목록.** 하이라이트된 행이 현재 선택이고, `Tab`으로 탭을 순환합니다. 초록 `[NOW]` 배지는 지금 띄운 pi 세션을 나타냅니다. 한글 prompt도 컬럼 정렬이 유지됩니다:
 
-<p align="center"><img src="../assets/screen-list.png" alt="pisesh 메인 목록. Favorites 탭, Today / Here / All 탭, NOW 배지, 이름 바꾼 세션" width="100%"></p>
+<p align="center"><img src="../assets/screen-list.png" alt="pisesh 메인 목록. Favorites, Today, Here, All 탭과 NOW 배지" width="100%"></p>
 
-**`e` 로 세션 이름 바꾸기.** 첫 prompt는 오래 들여다보는 스레드 제목으로는 별로라서, `e`로 원하는 이름을 지정할 수 있습니다. override로 저장되고(세션 jsonl은 건드리지 않음) 목록에 `✎` 마커가 붙습니다:
-
-<p align="center"><img src="../assets/screen-rename.png" alt="pisesh 이름 편집 패널, 커스텀 제목 지정" width="100%"></p>
-
-**`p` 로 작업 디렉터리 다시 지정.** 방향키 디렉터리 브라우저로, resume 할 때 pi가 실제로 `cd`할 경로를 고릅니다. 이 경로가 `Here` 탭의 필터 기준이기도 합니다. `s`를 누르면 하이라이트된 디렉터리로 확정됩니다:
-
-<p align="center"><img src="../assets/screen-cwd.png" alt="pisesh cwd 브라우저, resume 와 Here 디렉터리를 고르는 방향키 피커" width="100%"></p>
-
-**`Here` 탭**은 pisesh를 띄운 디렉터리와 cwd가 일치하는 세션만 보여줍니다. 프로젝트 안에서 열면 그 프로젝트 스레드만 보이고, 홈 디렉터리의 임시 세션을 스크롤로 지나칠 필요가 없습니다.
+**`Here` 탭**은 pisesh를 띄운 디렉터리와 기록된 cwd가 일치하는 세션만 보여줍니다. 프로젝트 안에서 열면 그 프로젝트 스레드만 보이고, 홈 디렉터리의 임시 세션을 스크롤로 지나칠 필요가 없습니다.
 
 ## 왜 pisesh?
 
@@ -54,16 +46,14 @@ pisesh는 **단일 파일 Node 스크립트** (의존성 0, ~900 LoC) 입니다.
 | 필요한 것                                    | 제공하는 것                                                       |
 | -------------------------------------------- | ----------------------------------------------------------------- |
 | 중요한 세션 표시                             | ⭐ 한 키로 별표/해제. 글로벌 JSON 하나에 영구 저장                 |
-| 스레드에 진짜 이름 붙이기                     | `e` 로 커스텀 제목 지정(`✎` 표시). 첫-prompt 라벨을 덮어씀          |
-| 현재 프로젝트 세션만 보기                     | `Here` 탭이 pisesh를 띄운 디렉터리와 cwd가 같은 세션만 필터    |
-| 세션이 재개될 위치 고치기                     | `p` 가 방향키 디렉터리 브라우저를 열어 pi가 `cd`할 cwd 지정       |
-| 한 말로 세션 찾기                            | `/` 로 id + 프로젝트 + 첫 user prompt + 커스텀 제목 매치 검색          |
+| 현재 프로젝트 세션만 보기                     | `Here` 탭이 pisesh를 띄운 디렉터리와 기록된 cwd가 같은 세션만 필터 |
+| 한 말로 세션 찾기                            | `/` 로 id + 프로젝트 + 첫 user prompt 매치 검색                  |
 | 지금 붙어있는 세션 파악                      | 라이브 세션에 `[NOW]` 배지 (env var로 pi가 전달)                  |
 | 터미널 깔끔히 유지                           | Alt-screen buffer로 종료 시 터미널이 원래 상태 그대로 복원 (vim과 동일) |
 | 한·중·일 prompt 읽기                         | 표시 너비 기반 truncation; CJK 들어가도 컬럼 안 흐트러짐           |
 | 어디서든 열기                                | 셸 명령어 `pisesh` 또는 pi 안의 `/sesh` 슬래시 명령                 |
 | 설치 고통 없음                               | 빌드 단계 없음, native deps 없음, Node 18+ 면 어디서든            |
-| 히스토리 안전성                              | pisesh는 작은 JSON 두 개(favorites + overrides)만 씀. 세션 jsonl은 읽기 전용 |
+| 히스토리 안전성                              | pisesh는 favorites JSON 하나만 씀. 탐색 중에는 세션 jsonl을 읽기만 함 |
 
 ## 설치
 
@@ -103,11 +93,9 @@ Pi 익스텐션 쪽: `extensions/sesh.ts` 를 `~/.pi/agent/extensions/` 에 떨�
 | `↑` `↓` / `j` `k`           | 커서 이동                                                     |
 | `Tab` / `h` / `l`           | 탭 전환 (`★ Favorites` → `Today` → `Here` → `All`)             |
 | `f` / `Space`               | 선택 세션 별표/해제                                           |
-| `Enter`                     | 세션 재개. 세션의(또는 오버라이드한) cwd에서 `pi --session <id>` 실행 |
-| `e`                         | 이름 편집. 커스텀 제목을 지정하고 목록에 `✎` 표시          |
-| `p`                         | cwd 편집. 방향키 디렉터리 브라우저로 resume / `Here` 기준 경로 지정 |
+| `Enter`                     | 세션 재개. 기록된 cwd에서 `pi --session <id>` 실행               |
 | `d`                         | 세션 상세 (전체 prompt, 파일 경로, 크기, 시각)                |
-| `/`                         | 검색 (id / 프로젝트 / 첫 user prompt / 커스텀 제목)             |
+| `/`                         | 검색 (id / 프로젝트 / 첫 user prompt)                         |
 | `Esc`                       | 검색 클리어 → 한 번 더 누르면 종료                            |
 | `q` / `Ctrl-C`              | 종료 (터미널 복원됨)                                          |
 | `r`                         | 세션 파일 재스캔 (pi가 새 세션 시작했을 때)                   |
@@ -138,7 +126,7 @@ pisesh --help
 | 입력                | Node `readline.emitKeypressEvents` raw 모드                                                     |
 | 너비 계산           | UAX #11 East Asian Width 범위, ~10줄짜리 인라인 체크로 압축                                     |
 | Pi 익스텐션         | `@earendil-works/pi-coding-agent` 익스텐션 API (`ui.custom`, `tui.stop`) 의 TS 팩토리            |
-| 저장소              | JSON 파일 2개: `~/.pi/agent/favorites.json` (별표 id) + `~/.pi/agent/pisesh-meta.json` (세션별 제목 / cwd 오버라이드) |
+| 저장소              | JSON 파일 1개: `~/.pi/agent/favorites.json` (별표 id)                              |
 | 세션 탐색           | `~/.pi/agent/sessions/<projectSlug>/*.jsonl` 직접 파일시스템 스캔, 첫 96 KB 만 파싱              |
 | 프로세스 모델       | 슬래시 명령이 pi TUI를 멈춤 → stdio 상속으로 pisesh 스폰 → 종료 시 pi 다시 그림                  |
 
@@ -154,8 +142,7 @@ pisesh --help
 | 무엇       | 어디                                                       |
 | ---------- | ---------------------------------------------------------- |
 | 즐겨찾기   | `~/.pi/agent/favorites.json`                               |
-| 오버라이드 | `~/.pi/agent/pisesh-meta.json` (세션별 커스텀 제목 / cwd, session id로 키잉) |
-| 세션       | `~/.pi/agent/sessions/<projectSlug>/<timestamp>_<uuid>.jsonl` (pi 기본 레이아웃. pisesh는 여기 안 씀) |
+| 세션       | `~/.pi/agent/sessions/<projectSlug>/<timestamp>_<uuid>.jsonl` (pi 기본 레이아웃) |
 
 즐겨찾기 파일 모양:
 

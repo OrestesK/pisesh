@@ -24,19 +24,11 @@
 
 What the TUI looks like, screen by screen. The data below is made up, not real sessions.
 
-**Main list.** The highlighted row is the current selection, and `Tab` cycles through the tabs. The green `[NOW]` badge marks the pi session you launched from, and the cyan `✎` marks a session you renamed yourself. CJK titles stay column-aligned:
+**Main list.** The highlighted row is the current selection, and `Tab` cycles through the tabs. The green `[NOW]` badge marks the pi session you launched from. CJK prompts stay column-aligned:
 
-<p align="center"><img src="assets/screen-list.png" alt="pisesh main list, Favorites tab with Today / Here / All tabs, the NOW badge, and a renamed session" width="100%"></p>
+<p align="center"><img src="assets/screen-list.png" alt="pisesh main list with Favorites, Today, Here, and All tabs plus the NOW badge" width="100%"></p>
 
-**`e` renames a session.** The first user prompt makes a poor title for a thread you keep coming back to, so press `e` to set your own. It's saved as an override (the session jsonl is never touched) and the session gets a `✎` marker in the list:
-
-<p align="center"><img src="assets/screen-rename.png" alt="pisesh edit-name panel for setting a custom display title" width="100%"></p>
-
-**`p` re-points the working directory** through an arrow-key directory browser. This is the cwd pi actually `cd`s into on resume, and it's also what the `Here` tab filters on. Press `s` to lock in the highlighted directory:
-
-<p align="center"><img src="assets/screen-cwd.png" alt="pisesh cwd browser, an arrow-key directory picker for the resume and Here directory" width="100%"></p>
-
-The **`Here` tab** shows only sessions whose effective cwd matches the directory you launched pisesh from. Inside a project you see just that project's threads, without scrolling past your home-dir scratch sessions.
+The **`Here` tab** shows only sessions whose recorded cwd matches the directory you launched pisesh from. Inside a project you see just that project's threads, without scrolling past your home-dir scratch sessions.
 
 ## Why pisesh
 
@@ -54,16 +46,14 @@ pisesh is a **single-file Node script** (no dependencies, ~900 LoC) that gives y
 | Need                                       | What you get                                                                 |
 | ------------------------------------------ | ---------------------------------------------------------------------------- |
 | Mark important sessions                    | ⭐ Star/unstar with one keystroke; favorites persist to one global JSON       |
-| Give a thread a real name                  | `e` sets a custom title (marked `✎`); overrides the first-prompt label        |
-| See only the current project's sessions    | `Here` tab filters to sessions whose cwd matches where you launched pisesh   |
-| Fix where a session resumes                | `p` opens an arrow-key directory browser; sets the cwd pi `cd`s into         |
-| Find a session by what you said            | `/` searches id + project + first user prompt + custom title                 |
+| See only the current project's sessions    | `Here` tab filters to sessions whose recorded cwd matches where you launched pisesh |
+| Find a session by what you said            | `/` searches id + project + first user prompt                                |
 | Know which session you're attached to      | `[NOW]` badge on the live session (passed from pi via env var)               |
 | Keep your terminal clean                   | Alt-screen buffer, so quitting puts your terminal back the way it was (like vim) |
 | Read Korean / Chinese / Japanese prompts   | Display-width-aware truncation; columns never blow up on CJK                 |
 | Open from anywhere                         | Run as standalone `pisesh` shell command, or `/sesh` inside pi               |
 | Zero install pain                          | No build step, no native deps, runs on Node 18+ everywhere                   |
-| Trust it with your history                 | pisesh writes only two small JSON files (favorites + overrides); session jsonl files are read-only |
+| Trust it with your history                 | pisesh writes only the favorites file; session jsonl files are read-only during browsing |
 
 ## Getting started
 
@@ -103,11 +93,9 @@ Pi-extension side: drop `extensions/sesh.ts` into `~/.pi/agent/extensions/` and 
 | `↑` `↓` / `j` `k`            | move cursor                                                  |
 | `Tab` / `h` / `l`            | switch tab (`★ Favorites` → `Today` → `Here` → `All`)         |
 | `f` / `Space`                | star / unstar the selected session                           |
-| `Enter`                      | resume the session; runs `pi --session <id>` in its (or the overridden) cwd |
-| `e`                          | edit name: set a custom display title, shown with `✎` in the list |
-| `p`                          | edit cwd with an arrow-key directory browser; sets the resume / `Here` dir |
+| `Enter`                      | resume the session; runs `pi --session <id>` in its recorded cwd |
 | `d`                          | session details (full prompt, file, byte size, timestamps)   |
-| `/`                          | search by id / project / first user prompt / custom title    |
+| `/`                          | search by id / project / first user prompt                   |
 | `Esc`                        | clear search first, then quit                                |
 | `q` / `Ctrl-C`               | quit (terminal restored)                                     |
 | `r`                          | rescan session files (after pi starts a new session)         |
@@ -138,7 +126,7 @@ pisesh --help
 | Input               | Node's `readline.emitKeypressEvents` in raw mode                                                 |
 | Width calculation   | UAX #11 East Asian Width ranges, compressed to ~10 inline range checks                           |
 | Pi extension        | TypeScript factory using `@earendil-works/pi-coding-agent` extension API (`ui.custom`, `tui.stop`) |
-| Storage             | Two JSON files: `~/.pi/agent/favorites.json` (starred ids) + `~/.pi/agent/pisesh-meta.json` (per-session title / cwd overrides) |
+| Storage             | One JSON file: `~/.pi/agent/favorites.json` (starred ids)                                      |
 | Session discovery   | Direct filesystem scan of `~/.pi/agent/sessions/<projectSlug>/*.jsonl`; first 96 KB parsed       |
 | Process model       | Slash command pauses pi's TUI, spawns pisesh with inherited stdio, restarts pi on exit           |
 
@@ -154,8 +142,7 @@ pisesh --help
 | What       | Where                                                       |
 | ---------- | ----------------------------------------------------------- |
 | Favorites  | `~/.pi/agent/favorites.json`                                |
-| Overrides  | `~/.pi/agent/pisesh-meta.json` (per-session custom title / cwd, keyed by session id) |
-| Sessions   | `~/.pi/agent/sessions/<projectSlug>/<timestamp>_<uuid>.jsonl` (pi's native layout; pisesh never writes here) |
+| Sessions   | `~/.pi/agent/sessions/<projectSlug>/<timestamp>_<uuid>.jsonl` (pi's native layout) |
 
 Favorites file shape:
 

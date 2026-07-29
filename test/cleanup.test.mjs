@@ -27,7 +27,7 @@ function makeSession(home, id = "session-1", cwd = path.join(home, "project")) {
 	const sessionDir = path.join(home, ".pi", "agent", "sessions", projectSlug);
 	const file = path.join(sessionDir, `2026-01-01T00-00-00-000Z_${id}.jsonl`);
 	writeFile(file, `${JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-01-01T00:00:00.000Z", cwd })}\n`);
-	return { id, file, cwd, effectiveCwd: path.join(home, "override"), isCurrent: false };
+	return { id, file, cwd, isCurrent: false };
 }
 
 test("sanitizePart matches Slipstream artifact name sanitization", () => {
@@ -52,7 +52,6 @@ test("collectCleanupPlan includes only known artifacts from recorded cwd and all
 	writeFile(path.join(home, ".pi", "agent", ".scratch", "compactions", `${safeId}-global`, "summary.md"));
 	writeFile(path.join(home, ".pi", "agent", ".scratch", "slipstream-stats", "sessions", `${safeId}.jsonl`));
 	writeFile(path.join(session.cwd, ".scratch", "compactions", `${safeId}-project`, "summary.md"));
-	writeFile(path.join(session.effectiveCwd, ".scratch", "compactions", `${safeId}-override-must-not-match`, "summary.md"));
 	writeFile(path.join(path.dirname(session.file), path.basename(session.file, ".jsonl"), "run-1", "child.jsonl"));
 
 	const plan = collectCleanupPlan(session, { home, tmpdir: os.tmpdir() });
@@ -66,7 +65,6 @@ test("collectCleanupPlan includes only known artifacts from recorded cwd and all
 		path.join(path.dirname(session.file), path.basename(session.file, ".jsonl")),
 		path.join(session.cwd, ".scratch", "compactions", `${safeId}-project`),
 	].sort());
-	assert.equal(itemPaths.some((p) => p.includes("override-must-not-match")), false);
 });
 
 test("collectCleanupPlan parses async dirs only from allowed one-level subagent run paths", () => {
@@ -130,11 +128,10 @@ test("collectCleanupPlan parses Windows-style async run separators", () => {
 	assert.deepEqual(asyncItems, [currentRun]);
 });
 
-test("performCleanupPlan preserves metadata when session deletion fails", () => {
+test("performCleanupPlan preserves favorites when session deletion fails", () => {
 	const { home } = makeTempHome();
-	const session = makeSession(home, "keep-metadata-session");
+	const session = makeSession(home, "keep-favorite-session");
 	writeFile(path.join(home, ".pi", "agent", "favorites.json"), JSON.stringify({ ids: [session.id, "other"] }));
-	writeFile(path.join(home, ".pi", "agent", "pisesh-meta.json"), JSON.stringify({ overrides: { [session.id]: { title: "Keep me" }, other: { title: "Keep" } } }));
 	const plan = collectCleanupPlan(session, { home, tmpdir: os.tmpdir() });
 	const originalUnlinkSync = fs.unlinkSync;
 	fs.unlinkSync = (filePath) => {
@@ -148,39 +145,33 @@ test("performCleanupPlan preserves metadata when session deletion fails", () => 
 	try {
 		const result = performCleanupPlan(plan, { home, useTrash: false });
 		assert.equal(result.ok, false);
-		assert.equal(result.metadataChanged, false);
+		assert.equal(result.favoritesChanged, false);
 		assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, ".pi", "agent", "favorites.json"), "utf8")).ids, [session.id, "other"]);
-		assert.deepEqual(
-			Object.keys(JSON.parse(fs.readFileSync(path.join(home, ".pi", "agent", "pisesh-meta.json"), "utf8")).overrides).sort(),
-			[session.id, "other"].sort(),
-		);
 	} finally {
 		fs.unlinkSync = originalUnlinkSync;
 	}
 });
 
-test("performCleanupPlan reports metadata parse failures", () => {
+test("performCleanupPlan reports favorites parse failures", () => {
 	const { home } = makeTempHome();
-	const session = makeSession(home, "metadata-parse-fail-session");
+	const session = makeSession(home, "favorites-parse-fail-session");
 	writeFile(path.join(home, ".pi", "agent", "favorites.json"), "not-json");
-	writeFile(path.join(home, ".pi", "agent", "pisesh-meta.json"), "not-json");
 	const plan = collectCleanupPlan(session, { home, tmpdir: os.tmpdir() });
 	const result = performCleanupPlan(plan, { home, useTrash: false });
 	assert.equal(result.ok, false);
-	assert.equal(result.metadataChanged, false);
-	assert.equal(result.failed.filter((item) => item.type === "pisesh-metadata").length, 2);
+	assert.equal(result.favoritesChanged, false);
+	assert.equal(result.failed.filter((item) => item.type === "pisesh-favorites").length, 1);
 });
 
-test("performCleanupPlan reports metadata write failures", () => {
+test("performCleanupPlan reports favorites write failures", () => {
 	const { home } = makeTempHome();
-	const session = makeSession(home, "metadata-fail-session");
+	const session = makeSession(home, "favorites-fail-session");
 	writeFile(path.join(home, ".pi", "agent", "favorites.json"), JSON.stringify({ ids: [session.id, "other"] }));
-	writeFile(path.join(home, ".pi", "agent", "pisesh-meta.json"), JSON.stringify({ overrides: { [session.id]: { title: "Delete me" }, other: { title: "Keep" } } }));
 	const plan = collectCleanupPlan(session, { home, tmpdir: os.tmpdir() });
 	const originalWriteFileSync = fs.writeFileSync;
 	fs.writeFileSync = (filePath, ...args) => {
-		if (filePath.endsWith("favorites.json") || filePath.endsWith("pisesh-meta.json")) {
-			const error = new Error("simulated metadata write failure");
+		if (filePath.endsWith("favorites.json")) {
+			const error = new Error("simulated favorites write failure");
 			error.code = "EACCES";
 			throw error;
 		}
@@ -189,20 +180,19 @@ test("performCleanupPlan reports metadata write failures", () => {
 	try {
 		const result = performCleanupPlan(plan, { home, useTrash: false });
 		assert.equal(result.ok, false);
-		assert.equal(result.metadataChanged, false);
-		assert.equal(result.failed.filter((item) => item.type === "pisesh-metadata").length, 2);
+		assert.equal(result.favoritesChanged, false);
+		assert.equal(result.failed.filter((item) => item.type === "pisesh-favorites").length, 1);
 	} finally {
 		fs.writeFileSync = originalWriteFileSync;
 	}
 });
 
-test("performCleanupPlan removes files, dirs, and pisesh metadata entries", () => {
+test("performCleanupPlan removes files, dirs, and the favorite entry", () => {
 	const { home } = makeTempHome();
 	const session = makeSession(home, "delete-session");
 	const compaction = path.join(home, ".pi", "agent", ".scratch", "compactions", `${sanitizePart(session.id)}-x`);
 	writeFile(path.join(compaction, "summary.md"));
 	writeFile(path.join(home, ".pi", "agent", "favorites.json"), JSON.stringify({ ids: [session.id, "other"] }));
-	writeFile(path.join(home, ".pi", "agent", "pisesh-meta.json"), JSON.stringify({ overrides: { [session.id]: { title: "Delete me" }, other: { title: "Keep" } } }));
 
 	const plan = collectCleanupPlan(session, { home, tmpdir: os.tmpdir() });
 	const result = performCleanupPlan(plan, { home, useTrash: false });
@@ -210,6 +200,6 @@ test("performCleanupPlan removes files, dirs, and pisesh metadata entries", () =
 	assert.equal(result.ok, true);
 	assert.equal(fs.existsSync(session.file), false);
 	assert.equal(fs.existsSync(compaction), false);
+	assert.equal(result.favoritesChanged, true);
 	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, ".pi", "agent", "favorites.json"), "utf8")).ids, ["other"]);
-	assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(home, ".pi", "agent", "pisesh-meta.json"), "utf8")).overrides), ["other"]);
 });

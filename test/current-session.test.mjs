@@ -82,7 +82,7 @@ function loadSeshExtension(spawnImpl = () => ({ on() {} })) {
 test("resuming the current session exits without spawning pi", () => {
 	const { resumeSession, spawns } = loadResumeSession();
 	assert.throws(
-		() => resumeSession({ id: "session-current", file: "/tmp/current.jsonl", effectiveCwd: "/tmp" }),
+		() => resumeSession({ id: "session-current", file: "/tmp/current.jsonl", cwd: "/tmp" }),
 		(error) => error?.code === 0,
 	);
 	assert.equal(spawns.length, 0);
@@ -90,80 +90,38 @@ test("resuming the current session exits without spawning pi", () => {
 
 test("resuming a different session still spawns pi with the session file", () => {
 	const { resumeSession, spawns } = loadResumeSession();
-	resumeSession({ id: "session-other", file: "/tmp/other.jsonl", effectiveCwd: "/tmp" });
+	resumeSession({ id: "session-other", file: "/tmp/other.jsonl", cwd: "/tmp" });
 	assert.equal(spawns.length, 1);
 	assert.equal(spawns[0][0], "pi");
 	assert.deepEqual(Array.from(spawns[0][1]), ["--session", "/tmp/other.jsonl", "--session-dir", "/tmp"]);
 });
 
-test("missing resume cwd falls back to forwarded pisesh cwd", () => {
+test("missing recorded cwd falls back to forwarded pisesh cwd", () => {
 	const { resumeSession, spawns } = loadResumeSession();
-	resumeSession({ id: "session-other", file: "/tmp/other.jsonl", effectiveCwd: "/missing-dir" });
+	resumeSession({ id: "session-other", file: "/tmp/other.jsonl", cwd: "/missing-dir" });
 	assert.equal(spawns.length, 1);
 	assert.equal(spawns[0][2].cwd, "/tmp");
 });
 
-test("existing file resume cwd falls back to forwarded pisesh cwd", () => {
+test("recorded file path falls back to forwarded pisesh cwd", () => {
 	const { resumeSession, spawns } = loadResumeSession();
-	resumeSession({ id: "session-other", file: "/tmp/other.jsonl", effectiveCwd: binPath });
+	resumeSession({ id: "session-other", file: "/tmp/other.jsonl", cwd: binPath });
 	assert.equal(spawns.length, 1);
 	assert.equal(spawns[0][2].cwd, "/tmp");
 });
 
 test("invalid forwarded pisesh cwd falls back to process cwd", () => {
 	const { resumeSession, spawns } = loadResumeSession({ currentCwd: "/missing-forwarded-cwd", processCwd: "/tmp" });
-	resumeSession({ id: "session-other", file: "/tmp/other.jsonl", effectiveCwd: "/missing-dir" });
+	resumeSession({ id: "session-other", file: "/tmp/other.jsonl", cwd: "/missing-dir" });
 	assert.equal(spawns.length, 1);
 	assert.equal(spawns[0][2].cwd, "/tmp");
 });
 
 test("missing process cwd falls back to session directory root", () => {
 	const { resumeSession, spawns } = loadResumeSession({ currentCwd: null, throwCwd: true });
-	resumeSession({ id: "session-other", file: "/tmp/other.jsonl", effectiveCwd: "/missing-dir" });
+	resumeSession({ id: "session-other", file: "/tmp/other.jsonl", cwd: "/missing-dir" });
 	assert.equal(spawns.length, 1);
 	assert.equal(spawns[0][2].cwd, "/tmp");
-});
-
-test("cwd browser stops at missing Windows drive root", () => {
-	const source = fs.readFileSync(binPath, "utf8").replace(
-		/\nmain\(\);\s*$/,
-		"\nglobalThis.__buildBrowse = buildBrowse; globalThis.__getBrowseDir = () => browseDir; globalThis.__getBrowseEntries = () => browseEntries;",
-	);
-	const context = {
-		console,
-		Buffer,
-		setTimeout,
-		clearTimeout,
-		__dirname: path.dirname(binPath),
-		__filename: binPath,
-		require(name) {
-			if (name === "fs") {
-				return {
-					readFileSync() { throw new Error("not found"); },
-					existsSync() { return false; },
-					statSync() { throw new Error("not found"); },
-					readdirSync() { throw new Error("not found"); },
-					mkdirSync() {},
-					writeFileSync() {},
-				};
-			}
-			if (name === "path") return path.win32;
-			if (name === "child_process") return { spawn() { return { on() {} }; } };
-			return require(name);
-		},
-		process: {
-			env: {},
-			argv: ["node", binPath],
-			stdout: { write() {} },
-			stdin: { isTTY: true, setRawMode() {}, pause() {} },
-			exit(code = 0) { throw { code }; },
-			cwd: () => "C:\\fallback",
-		},
-	};
-	vm.runInNewContext(source, context, { filename: binPath });
-	context.__buildBrowse("Z:\\missing\\child");
-	assert.equal(context.__getBrowseDir(), "\\");
-	assert.deepEqual(Array.from(context.__getBrowseEntries(), (entry) => entry.kind), ["use"]);
 });
 
 test("slash command fails closed when current session id is unavailable", async () => {

@@ -15,7 +15,7 @@ The cleanup flow adds these behaviors:
 - blocks cleanup for the attached `[NOW]` session;
 - deletes only known associated pisesh/Pi artifacts;
 - prefers system trash (`trash`, `trash-put`, or `gio trash`) before direct deletion;
-- removes matching entries from pisesh metadata files after the session file is removed.
+- removes the matching favorite after the session file is removed.
 
 `lib/cleanup.js` contains the cleanup planning and execution logic. It only includes allowlisted paths and rejects unsafe symlink/path escapes.
 
@@ -26,7 +26,7 @@ Local cleanup includes known associated artifacts, not arbitrary files mentioned
 The allowlisted artifact set includes:
 
 - the selected session JSONL;
-- that session's pisesh favorite/title/cwd metadata entries;
+- that session's pisesh favorite entry;
 - matching Pi/Slipstream compaction artifacts under known compaction roots;
 - Slipstream per-session stats JSONL;
 - sibling subagent child-session trees stored next to the parent session file;
@@ -50,16 +50,10 @@ Local resume behavior differs from upstream in these ways:
 
 - selecting the attached `[NOW]` session exits back to the current Pi instead of spawning nested Pi;
 - selecting another session resumes with `pi --session <session-file> --session-dir <session-dir>`;
-- resume cwd falls back from the session's effective cwd to forwarded `PISESH_CWD`, then process cwd, then the session directory root;
+- resume cwd falls back from the session's recorded cwd to forwarded `PISESH_CWD`, then process cwd, then the session directory root;
 - cwd fallback tolerates inaccessible process cwd.
 
 The upstream `v0.1.10` orphan-tool-call healer remains upstream behavior, not a local delta.
-
-## Cwd browser hardening
-
-Local directory browsing avoids traversing past filesystem roots, including missing Windows-drive roots.
-
-This protects the cwd editor from looping or presenting invalid parent paths when a selected/forwarded cwd is missing.
 
 ## Package and test layout
 
@@ -69,12 +63,6 @@ Local package metadata ships and tests the added cleanup/extension behavior:
 - `package.json` expands `npm test` to syntax-check `bin/pisesh` and `lib/cleanup.js`, then run current-session, cleanup, and extension-load tests;
 - `jiti` is a dev dependency for loading the TypeScript extension in tests;
 - `pnpm-workspace.yaml` sets `lockfile: false` so local package test runs do not create a submodule lockfile.
-
-## Upstream-owned documentation
-
-`README.md`, `docs/README.ko.md`, and `CHANGELOG.md` stay aligned with upstream package documentation.
-
-Local-only behavior is documented in this ledger rather than changing upstream-owned docs.
 
 ## Validation used for this patch stack
 
