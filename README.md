@@ -226,7 +226,8 @@ Korean / Chinese / Japanese / fullwidth characters render **2 cells wide** in te
   - Windows: **Windows Terminal**, **WezTerm**, **Alacritty** ✅
   - macOS: **iTerm2**, **Terminal.app**, **WezTerm**, **Alacritty**, **Kitty** ✅
   - Linux: **GNOME Terminal**, **Konsole**, **xterm**, **Alacritty**, **Kitty** ✅
-- [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) on `$PATH` when using standalone `pisesh`
+- [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) on `$PATH` for standalone Pi-mode resume
+- `omp` on `$PATH` for standalone OMP-mode resume (`ompsesh` or `pisesh --omp`)
 
 ## Contributing
 
