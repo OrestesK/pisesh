@@ -2,14 +2,22 @@
  * pisesh slash command
  *
  * `/sesh` temporarily hands the terminal to the bundled picker. The picker
- * returns a session path on a private fd; this extension then asks pi to switch
- * its current runtime. Standalone `pisesh` still launches pi itself.
+ * returns a session path on a private fd; this extension then asks the host to
+ * switch its current runtime. Standalone `pisesh` launches the selected host.
  */
 
 import { spawn } from "node:child_process";
 import path from "node:path";
 import type { Readable } from "node:stream";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	buildHandoffPayload,
+	parseHandoffHookDescriptor,
+	parseSeshHandoffHookArgs,
+	runHandoffHook,
+} from "../lib/handoff-hook.js";
+import type { HandoffHookDescriptor } from "../lib/handoff-hook.js";
+import { normalizeSwitchResult } from "../lib/switch-result.js";
 
 // Static package path, no user-controlled segments.
 const PISESH_CLI = path.resolve(__dirname, "../bin/pisesh"); // pi-lens-ignore: ts-path-traversal
@@ -27,11 +35,11 @@ type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 type PiseshSelection = {
 	version: 1;
 	sessionPath: string;
-	resumeMode: "defaults" | "session";
 	cwdOverride?: string;
 	model?: string;
 	thinking?: ThinkingLevel;
 	repaired?: number;
+	handoffHook?: HandoffHookDescriptor;
 };
 
 type PickerResult = {
@@ -43,10 +51,14 @@ type PickerResult = {
 type PendingSwitch = Pick<
 	PiseshSelection,
 	"sessionPath" | "cwdOverride" | "model" | "thinking" | "repaired"
->;
+> & {
+	backend: "pi" | "omp";
+	handoffWarning?: string;
+};
 
 const processState = globalThis as typeof globalThis & {
 	__piseshPendingSwitch?: PendingSwitch;
+	__piseshPendingHandoff?: HandoffHookDescriptor;
 };
 
 function parseSelection(raw: string): PiseshSelection | undefined {
@@ -65,8 +77,7 @@ function parseSelection(raw: string): PiseshSelection | undefined {
 	if (
 		data.version !== 1 ||
 		typeof data.sessionPath !== "string" ||
-		!path.isAbsolute(data.sessionPath) ||
-		(data.resumeMode !== "defaults" && data.resumeMode !== "session")
+		path.isAbsolute(data.sessionPath) === false
 	) {
 		throw new Error("picker returned an invalid session selection");
 	}
@@ -88,10 +99,16 @@ function parseSelection(raw: string): PiseshSelection | undefined {
 	) {
 		throw new Error("picker returned an invalid repair count");
 	}
-	return data as PiseshSelection;
+	const handoffHook = parseHandoffHookDescriptor(data.handoffHook);
+	return { ...data, ...(handoffHook ? { handoffHook } : {}) } as PiseshSelection;
 }
 
-function runPisesh(currentSessionId: string | undefined): Promise<PickerResult> {
+function runPisesh(
+	currentSessionId: string | undefined,
+	backend: "pi" | "omp",
+	currentCwd: string,
+	hookExecutable?: string,
+): Promise<PickerResult> {
 	return new Promise((resolve) => {
 		let output = "";
 		let settled = false;
@@ -103,12 +120,17 @@ function runPisesh(currentSessionId: string | undefined): Promise<PickerResult> 
 
 		// fd 3 carries one small JSON result while stdin/stdout/stderr remain the
 		// real terminal used by the full-screen picker.
-		const child = spawn("node", [PISESH_CLI], {
+		const child = spawn("node", [
+			PISESH_CLI,
+			`--backend=${backend}`,
+			...(hookExecutable ? [`--handoff-hook=${hookExecutable}`] : []),
+		], {
 			stdio: ["inherit", "inherit", "inherit", "pipe"],
 			env: {
 				...process.env,
 				PISESH_SELECT_FD: "3",
-				PISESH_CWD: process.cwd(),
+				PISESH_BACKEND: backend,
+				PISESH_CWD: currentCwd,
 				...(currentSessionId
 					? { PISESH_CURRENT_SESSION: currentSessionId }
 					: {}),
@@ -147,6 +169,26 @@ export default function (pi: ExtensionAPI) {
 	// A successful switch loads a fresh extension instance before the old command
 	// returns. Plain pending data on globalThis lets that new instance apply the
 	// selected model and thinking without touching stale pre-switch pi/ctx objects.
+	pi.on("session_shutdown", async (event, _ctx) => {
+		const pending = processState.__piseshPendingSwitch;
+		const handoff = processState.__piseshPendingHandoff;
+		if (
+			!pending ||
+			!handoff ||
+			event.reason !== "resume" ||
+			!sameSession(event.targetSessionFile, pending.sessionPath) ||
+			!sameSession(handoff.session.path, pending.sessionPath)
+		) {
+			return;
+		}
+		processState.__piseshPendingHandoff = undefined;
+		const result = await runHandoffHook(
+			handoff.executable,
+			buildHandoffPayload(handoff.session, "sesh"),
+		);
+		if (!result.ok) pending.handoffWarning = result.warning;
+	});
+
 	pi.on("session_start", async (event, ctx) => {
 		const pending = processState.__piseshPendingSwitch;
 		if (
@@ -157,6 +199,9 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		processState.__piseshPendingSwitch = undefined;
+		if (pending.handoffWarning) {
+			ctx.ui.notify(`pisesh: ${pending.handoffWarning}`, "warning");
+		}
 
 		if (pending.model) {
 			const separator = pending.model.indexOf("/");
@@ -190,26 +235,37 @@ export default function (pi: ExtensionAPI) {
 			path.resolve(ctx.cwd) !== path.resolve(pending.cwdOverride)
 		) {
 			ctx.ui.notify(
-				"This pi version did not apply the selected cwd override; update pi to a version that supports it",
+				`This ${pending.backend === "omp" ? "OMP" : "Pi"} version did not apply the selected cwd override`,
 				"warning",
 			);
 		}
 	});
 
 	pi.registerCommand("sesh", {
-		description: "Browse, star, and resume pi sessions (opens pisesh TUI)",
-		handler: async (_args, ctx) => {
+		description: "Browse, star, and resume Pi or OMP sessions (opens pisesh TUI)",
+		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {
-				ctx.ui.notify("/sesh requires pi's interactive TUI", "warning");
+				ctx.ui.notify("/sesh requires an interactive TUI", "warning");
+				return;
+			}
+			let hookExecutable: string | undefined;
+			try {
+				hookExecutable = parseSeshHandoffHookArgs(args);
+			} catch (error) {
+				ctx.ui.notify(
+					`pisesh: ${error instanceof Error ? error.message : String(error)}`,
+					"error",
+				);
 				return;
 			}
 
 			const currentId = ctx.sessionManager.getSessionId();
+			const backend = "models" in ctx ? "omp" : "pi";
 			const result = await ctx.ui.custom<PickerResult>(
 				(tui, _theme, _keybindings, done) => {
 					tui.stop();
 					process.stdout.write("\x1b[2J\x1b[H");
-					void runPisesh(currentId).then((pickerResult) => {
+					void runPisesh(currentId, backend, ctx.cwd, hookExecutable).then((pickerResult) => {
 						tui.start();
 						tui.requestRender(true);
 						done(pickerResult);
@@ -238,31 +294,46 @@ export default function (pi: ExtensionAPI) {
 
 			const pending: PendingSwitch = {
 				sessionPath: selection.sessionPath,
+				backend,
 				cwdOverride: selection.cwdOverride,
 				model: selection.model,
 				thinking: selection.thinking,
 				repaired: selection.repaired,
 			};
 			processState.__piseshPendingSwitch = pending;
+			processState.__piseshPendingHandoff = selection.handoffHook;
 
 			try {
 				const switchSession = ctx.switchSession as (
 					sessionPath: string,
 					options?: { cwdOverride?: string },
-				) => Promise<{ cancelled: boolean }>;
-				const switched = await switchSession(
-					selection.sessionPath,
-					selection.cwdOverride
-						? { cwdOverride: selection.cwdOverride }
-						: undefined,
-				);
-				if (switched.cancelled) {
+				) => Promise<unknown>;
+				const switched = pending.backend === "omp"
+					? await switchSession(selection.sessionPath)
+					: await switchSession(
+							selection.sessionPath,
+							selection.cwdOverride
+								? { cwdOverride: selection.cwdOverride }
+								: undefined,
+						);
+				if (normalizeSwitchResult(switched).cancelled) {
 					processState.__piseshPendingSwitch = undefined;
+					processState.__piseshPendingHandoff = undefined;
 					ctx.ui.notify("Resume cancelled", "info");
 				}
+			} catch (error) {
+				if (pending.handoffWarning) {
+					process.stderr.write(`pisesh: ${pending.handoffWarning}\n`);
+				}
+				processState.__piseshPendingSwitch = undefined;
+				processState.__piseshPendingHandoff = undefined;
+				throw error;
 			} finally {
 				if (processState.__piseshPendingSwitch === pending) {
 					processState.__piseshPendingSwitch = undefined;
+				}
+				if (processState.__piseshPendingHandoff === selection.handoffHook) {
+					processState.__piseshPendingHandoff = undefined;
 				}
 			}
 		},

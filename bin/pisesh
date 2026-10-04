@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// pisesh — pi session bookmark & resume TUI
+// pisesh — Pi / Oh My Pi session bookmark & resume TUI
 // Tabs: ★ Favorites / Today / Here / All
-// Storage: $PI_AGENT_DIR/favorites.json   (starred session ids)
-//          $PI_AGENT_DIR/pisesh-meta.json (per-session title / cwd overrides)
-// Sessions: $PI_SESSION_DIR or $PI_AGENT_DIR/sessions
+// Storage: active backend agent dir/favorites.json   (starred session ids)
+//          active backend agent dir/pisesh-meta.json (per-session title / cwd overrides)
+// Sessions: active backend session directory
 
 'use strict';
 
@@ -12,20 +12,82 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 const readline = require('readline');
+const {
+  buildHandoffPayload,
+  createHandoffHookDescriptor,
+  resolveHandoffHook,
+  runHandoffHook,
+} = require('../lib/handoff-hook');
 
 // ── Paths ─────────────────────────────────────────────
 const HOME = os.homedir();
-const AGENT_DIR = path.resolve(process.env.PI_AGENT_DIR || process.env.PI_CODING_AGENT_DIR || path.join(HOME, '.pi/agent'));
-const SESSIONS_ROOT = path.resolve(process.env.PI_SESSION_DIR || process.env.PI_CODING_AGENT_SESSION_DIR || path.join(AGENT_DIR, 'sessions'));
-const FAV_FILE = path.join(AGENT_DIR, 'favorites.json');
-const META_FILE = path.join(AGENT_DIR, 'pisesh-meta.json');
-const SETTINGS_FILE = path.join(AGENT_DIR, 'settings.json');
+
+function parseBackendArgs(argv, invokedAs = path.basename(process.argv[1] || ''), env = process.env) {
+  let backend = invokedAs === 'ompsesh' || env.PISESH_BACKEND === 'omp' ? 'omp' : 'pi';
+  const args = [];
+  for (const arg of argv) {
+    if (arg === '--omp') { backend = 'omp'; continue; }
+    if (arg === '--backend=pi') { backend = 'pi'; continue; }
+    if (arg === '--backend=omp') { backend = 'omp'; continue; }
+    args.push(arg);
+  }
+  return { backend, args };
+}
+
+function resolveBackendPaths(backend, env = process.env, home = os.homedir()) {
+  let agentDir;
+  let sessionsRoot;
+  if (backend === 'omp') {
+    const profile = (env.OMP_PROFILE !== undefined ? env.OMP_PROFILE : env.PI_PROFILE) || '';
+    const configRoot = path.join(home, env.PI_CONFIG_DIR || '.config/omp');
+    agentDir = env.PI_CODING_AGENT_DIR || (profile && profile !== 'default'
+      ? path.join(configRoot, 'profiles', profile, 'agent')
+      : path.join(configRoot, 'agent'));
+    sessionsRoot = env.PI_CODING_AGENT_SESSION_DIR || path.join(agentDir, 'sessions');
+  } else {
+    agentDir = env.PI_AGENT_DIR || env.PI_CODING_AGENT_DIR || path.join(home, '.pi/agent');
+    sessionsRoot = env.PI_SESSION_DIR || env.PI_CODING_AGENT_SESSION_DIR || path.join(agentDir, 'sessions');
+  }
+  agentDir = path.resolve(agentDir);
+  return { agentDir, sessionsRoot: path.resolve(sessionsRoot) };
+}
+
+function resolveToggledBackendPaths(backend, initialBackend, env = process.env, home = os.homedir()) {
+  if (backend === initialBackend) return resolveBackendPaths(backend, env, home);
+  const isolatedEnv = { ...env };
+  delete isolatedEnv.PI_CODING_AGENT_DIR;
+  delete isolatedEnv.PI_CODING_AGENT_SESSION_DIR;
+  return resolveBackendPaths(backend, isolatedEnv, home);
+}
+
+const CLI = parseBackendArgs(process.argv.slice(2));
+let BACKEND;
+let BACKEND_COMMAND;
+let AGENT_DIR;
+let SESSIONS_ROOT;
+let FAV_FILE;
+let META_FILE;
+let SETTINGS_FILE;
+let BACKEND_ENV;
 function piAgentEnv(baseEnv = process.env, agentDir = AGENT_DIR) {
   return { ...baseEnv, PI_CODING_AGENT_DIR: agentDir };
 }
-const PI_ENV = piAgentEnv();
+function configureBackend(backend) {
+  const command = backend === 'omp' ? 'omp' : 'pi';
+  const { agentDir, sessionsRoot } = resolveToggledBackendPaths(backend, CLI.backend);
+  const backendEnv = piAgentEnv(process.env, agentDir);
+  BACKEND = backend;
+  BACKEND_COMMAND = command;
+  AGENT_DIR = agentDir;
+  SESSIONS_ROOT = sessionsRoot;
+  FAV_FILE = path.join(agentDir, 'favorites.json');
+  META_FILE = path.join(agentDir, 'pisesh-meta.json');
+  SETTINGS_FILE = path.join(agentDir, 'settings.json');
+  BACKEND_ENV = backendEnv;
+}
+configureBackend(CLI.backend);
 // The /sesh extension gives the picker a private result pipe. Standalone
-// pisesh has no such fd and keeps launching pi itself.
+// pisesh has no such fd and launches the selected backend itself.
 const SELECT_FD = (() => {
   const fd = Number(process.env.PISESH_SELECT_FD);
   return Number.isInteger(fd) && fd >= 3 ? fd : null;
@@ -48,7 +110,7 @@ const CURRENT_SESSION_ID = (process.env.PISESH_CURRENT_SESSION || '').trim();
 // via PISESH_CWD; falling back to process.cwd() keeps standalone use working.
 // Drives the "Here" tab (sessions whose effective cwd matches this dir).
 const CURRENT_CWD = (process.env.PISESH_CWD || process.cwd() || '').replace(/\/+$/, '');
-
+let handoffHookExecutable;
 // ── ANSI ──────────────────────────────────────────────
 const A = {
   clr: '\x1b[2J\x1b[H',
@@ -192,22 +254,30 @@ function readSessionMeta(file) {
   let buf;
   try {
     const fd = fs.openSync(file, 'r');
-    const tmp = Buffer.alloc(96 * 1024);
-    const n = fs.readSync(fd, tmp, 0, tmp.length, 0);
-    fs.closeSync(fd);
-    buf = tmp.slice(0, n).toString('utf8');
+    try {
+      const tmp = Buffer.alloc(96 * 1024);
+      const n = fs.readSync(fd, tmp, 0, tmp.length, 0);
+      buf = tmp.slice(0, n).toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch { return null; }
 
   const lines = buf.split('\n');
   let session = null;
   let firstPrompt = '';
+  let nativeTitle = '';
   for (const line of lines) {
     if (!line.trim()) continue;
     let obj;
     try { obj = JSON.parse(line); }
     catch { continue; } // truncated last line is fine
 
-    if (!session && obj.type === 'session') session = obj;
+    if (!nativeTitle && obj.type === 'title' && typeof obj.title === 'string') nativeTitle = obj.title.trim();
+    if (!session && obj.type === 'session') {
+      session = obj;
+      if (!nativeTitle && typeof obj.title === 'string') nativeTitle = obj.title.trim();
+    }
 
     if (!firstPrompt && obj.type === 'message' && obj.message && obj.message.role === 'user') {
       const content = obj.message.content;
@@ -224,6 +294,7 @@ function readSessionMeta(file) {
   }
   if (!session) return null;
   session.firstPrompt = firstPrompt;
+  session.nativeTitle = nativeTitle;
   return session;
 }
 
@@ -270,6 +341,7 @@ function scanSessions() {
         projectSlug: d.name,
         file: full,
         prompt: meta.firstPrompt || '',
+        nativeTitle: meta.nativeTitle || '',
         size: st.size,
         get favored() { return favorites.has(this.id); },
         get isCurrent() { return CURRENT_SESSION_ID !== '' && this.id === CURRENT_SESSION_ID; },
@@ -279,9 +351,9 @@ function scanSessions() {
         get titleModel() { return overridesFor(this.id).titleModel || ''; },
         get titleThinkingLevel() { return overridesFor(this.id).titleThinkingLevel || ''; },
         get cwdOverride() { return (overridesFor(this.id).cwd || '').trim(); },
-        // Name shown in the list: custom title > first prompt > id fallback.
+        // Name shown in the list: custom title > OMP native title > first prompt > id fallback.
         get title() {
-          return this.titleOverride || this.prompt || `(no prompt) ${this.id.slice(0, 8)}`;
+          return this.titleOverride || this.nativeTitle || this.prompt || `(no prompt) ${this.id.slice(0, 8)}`;
         },
         // cwd actually used to resume / filter by "Here": override wins.
         get effectiveCwd() { return this.cwdOverride || this.cwd; },
@@ -335,6 +407,33 @@ let settingsPendingTarget = null;
 let generationJobs = []; // queued [{ target, model, effort }]
 let generationActive = false;
 let handingOff = false;
+function toggleBackend() {
+  if (SELECT_FD !== null) return;
+  if (generationActive) {
+    notice = 'finish or cancel title generation before switching backend';
+    return;
+  }
+
+  configureBackend(BACKEND === 'pi' ? 'omp' : 'pi');
+  favorites = loadFavorites();
+  const loaded = loadMeta();
+  meta = loaded.overrides;
+  metaSettings = loaded.settings;
+  sessions = scanSessions();
+
+  cursor = 0;
+  filter = '';
+  mode = 'list';
+  models = [];
+  modelSel = 0;
+  modelFilter = '';
+  modelStatus = '';
+  modelRequestId++;
+  modelThinking = new Set();
+  modelEffort = 'off';
+  settingsPendingTarget = null;
+  notice = `switched to ${BACKEND === 'omp' ? 'OMP' : 'Pi'} (${sessions.length} session${sessions.length === 1 ? '' : 's'})`;
+}
 
 function configuredPiModel() {
   try {
@@ -346,15 +445,28 @@ function configuredPiModel() {
   return '';
 }
 
-function parseModelEntries(output) {
+function parseModelEntries(output, backend = 'pi') {
+  if (backend === 'omp') {
+    try {
+      const data = JSON.parse(output);
+      return Array.isArray(data.models) ? data.models.map(model => ({
+        id: model.selector || (model.provider && model.id ? `${model.provider}/${model.id}` : ''),
+        thinking: Boolean(model.reasoning || (Array.isArray(model.thinking) && model.thinking.length)),
+      })).filter(entry => entry.id) : [];
+    } catch { return []; }
+  }
   return output.split(/\r?\n/).slice(1).map(line => {
     const cols = line.trim().split(/\s+/);
     return cols.length >= 6 ? { id: `${cols[0]}/${cols[1]}`, thinking: cols[4] === 'yes' } : null;
   }).filter(Boolean);
 }
 
-function parseModelList(output) {
-  return parseModelEntries(output).map(entry => entry.id);
+function parseModelList(output, backend = 'pi') {
+  return parseModelEntries(output, backend).map(entry => entry.id);
+}
+
+function modelListArgs(backend = 'pi') {
+  return backend === 'omp' ? ['models', '--json'] : ['--list-models'];
 }
 
 function textFromContent(content) {
@@ -484,10 +596,12 @@ function cleanGeneratedTitle(output) {
   return [...title].slice(0, 200).join('');
 }
 
-function titleGenerationArgs(model, effort, prompt) {
+function titleGenerationArgs(model, effort, prompt, backend = 'pi') {
+  const isolationArgs = backend === 'omp'
+    ? ['--print', '--no-session', '--no-skills', '--no-tools']
+    : ['--print', '--no-session', '--no-context-files', '--no-skills', '--no-prompt-templates', '--no-tools'];
   return [
-    '--print', '--no-session', '--no-context-files',
-    '--no-skills', '--no-prompt-templates', '--no-tools',
+    ...isolationArgs,
     '--system-prompt', 'You generate durable factual topic labels, not completion reports or conversation summaries. Use base-form imperative actions in both the title and subtitle. Describe the session’s central task independent of progress, using assistant evidence only for the topic, target, and scope. Never copy status, process, accomplishments, plans, promises, tool usage, first-person wording, or report-style phrasing. Follow the user instructions exactly and output only the requested single-line title and subtitle.',
     '--model', model, '--thinking', effort, prompt,
   ];
@@ -633,7 +747,7 @@ function renderList() {
   let out = A.clr;
 
   // Header
-  out += ' ' + A.B + A.cyn + 'pisesh' + A.R + A.D + '  pi session bookmarks  ' + A.R;
+  out += ' ' + A.B + A.cyn + 'pisesh' + A.R + A.D + `  ${BACKEND === 'omp' ? 'OMP' : 'Pi'} session bookmarks  ` + A.R;
   out += A.gry + `${sessions.length} sessions · ${favorites.size} starred` + A.R;
   out += '\n\n';
 
@@ -716,6 +830,7 @@ function renderList() {
   out += A.gry + '─'.repeat(Math.max(1, W - 1)) + A.R + '\n';
   out += ' ' + A.D + '↑↓' + A.R + ' move  '
       + A.D + 'Tab' + A.R + ' tab  '
+      + (SELECT_FD === null ? A.D + 'b' + A.R + ' backend  ' : '')
       + A.D + 'f' + A.R + ' star  '
       + A.D + 'x' + A.R + ' clean  '
       + A.D + 'Enter' + A.R + ' current  '
@@ -784,29 +899,29 @@ function openGenerationSettings(pendingTarget = null) {
   modelFilter = '';
   modelSel = 0;
   mode = 'model';
-  modelStatus = 'Loading models from pi…';
+  modelStatus = `Loading models from ${BACKEND_COMMAND}…`;
   render();
   let stdout = '', stderr = '';
   const requestId = ++modelRequestId;
-  const child = spawn('pi', ['--list-models'], {
+  const child = spawn(BACKEND_COMMAND, modelListArgs(BACKEND), {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: PI_ENV,
+    env: BACKEND_ENV,
   });
   child.stdout.on('data', d => { stdout += d; });
   child.stderr.on('data', d => { stderr += d; });
   child.on('error', e => {
     if (mode === 'model' && requestId === modelRequestId) {
-      modelStatus = `Could not run pi: ${e.message}`;
+      modelStatus = `Could not run ${BACKEND_COMMAND}: ${e.message}`;
       render();
     }
   });
   child.on('close', code => {
     if (mode !== 'model' || requestId !== modelRequestId) return;
-    const entries = code === 0 ? parseModelEntries(stdout) : [];
+    const entries = code === 0 ? parseModelEntries(stdout, BACKEND) : [];
     models = entries.map(entry => entry.id);
     modelThinking = new Set(entries.filter(entry => entry.thinking).map(entry => entry.id));
     modelStatus = models.length ? '' : `Could not list models${stderr.trim() ? `: ${stderr.trim()}` : ''}`;
-    const preferred = [metaSettings.titleModel, configuredPiModel()].filter(Boolean);
+    const preferred = [metaSettings.titleModel, BACKEND === 'pi' ? configuredPiModel() : ''].filter(Boolean);
     const idx = preferred.map(m => models.indexOf(m)).find(i => i >= 0);
     modelSel = idx !== undefined ? idx : 0;
     modelEffort = EFFORT_LEVELS.includes(metaSettings.titleThinkingLevel) ? metaSettings.titleThinkingLevel : 'off';
@@ -887,9 +1002,9 @@ function startTitleGeneration(job) {
   catch (e) { notice = `title generation failed: ${e.message}`; return; }
 
   let stdout = '', settled = false, timedOut = false;
-  const child = spawn('pi', titleGenerationArgs(job.model, job.effort, prompt), {
+  const child = spawn(BACKEND_COMMAND, titleGenerationArgs(job.model, job.effort, prompt, BACKEND), {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: PI_ENV,
+    env: BACKEND_ENV,
   });
   generationChildren.set(job.target.id, child);
   const timer = setTimeout(() => {
@@ -905,7 +1020,7 @@ function startTitleGeneration(job) {
     pumpTitleGeneration();
   };
   child.on('error', () => {
-    notice = 'title generation failed: could not start pi';
+    notice = `title generation failed: could not start ${BACKEND_COMMAND}`;
     complete();
   });
   child.on('close', code => {
@@ -927,7 +1042,7 @@ function startTitleGeneration(job) {
     } else if (!generationCancelled) {
       notice = timedOut
         ? 'title generation timed out after 120 seconds'
-        : `title generation failed: pi exited ${code ?? 'without a status'}`;
+        : `title generation failed: ${BACKEND_COMMAND} exited ${code ?? 'without a status'}`;
     }
     complete();
   });
@@ -1104,6 +1219,7 @@ function handleList(str, key) {
     tabIdx = (tabIdx - 1 + tabs.length) % tabs.length;
     cursor = 0;
   }
+  else if (k === 'b' && SELECT_FD === null) toggleBackend();
   else if (k === 'f' || str === ' ') {
     const s = list[cursor];
     if (s) {
@@ -1112,8 +1228,8 @@ function handleList(str, key) {
       saveFavorites(favorites);
     }
   }
-  else if (k === 'return') resumeSession(list[cursor], true);
-  else if (k === 'o') resumeSession(list[cursor], false);
+  else if (k === 'return') void resumeSession(list[cursor], true).catch(error => { leaveTui(); console.error(`pisesh: ${error.message}`); process.exit(1); });
+  else if (k === 'o') void resumeSession(list[cursor], false).catch(error => { leaveTui(); console.error(`pisesh: ${error.message}`); process.exit(1); });
   else if (k === 'x') {
     const removed = cleanStaleFavorites(sessions).length;
     notice = removed ? `removed ${removed} stale favorite${removed === 1 ? '' : 's'}` : 'no stale favorites';
@@ -1146,8 +1262,8 @@ function handleDetails(str, key) {
   const s = visibleSessions()[cursor];
   if (k === 'escape' || k === 'q' || k === 'd') { mode = 'list'; return; }
   if (key.ctrl && k === 'c') return quit();
-  if (k === 'return') return resumeSession(s, true);
-  if (k === 'o') return resumeSession(s, false);
+  if (k === 'return') return void resumeSession(s, true).catch(error => { leaveTui(); console.error(`pisesh: ${error.message}`); process.exit(1); });
+  if (k === 'o') return void resumeSession(s, false).catch(error => { leaveTui(); console.error(`pisesh: ${error.message}`); process.exit(1); });
   if (k === 'f' && s) {
     if (s.favored) favorites.delete(s.id); else favorites.add(s.id);
     saveFavorites(favorites);
@@ -1515,7 +1631,8 @@ function loadSessionSettings(file) {
   } catch { return null; }
 }
 
-function buildResumeArgs(s, useCurrentDefaults = true, settingsFile = SETTINGS_FILE) {
+function buildResumeArgs(s, useCurrentDefaults = true, settingsFile = SETTINGS_FILE, backend = 'pi') {
+  if (backend === 'omp') return ['--resume', path.resolve(s.file)];
   const args = ['--session', s.id, '--session-dir', path.dirname(s.file)];
   const defaults = useCurrentDefaults && loadResumeDefaults(settingsFile);
   if (defaults?.model) args.push('--model', defaults.model);
@@ -1523,21 +1640,32 @@ function buildResumeArgs(s, useCurrentDefaults = true, settingsFile = SETTINGS_F
   return args;
 }
 
-function buildSelection(s, useCurrentDefaults = true, repaired = 0, settingsFile = SETTINGS_FILE) {
-  const defaults = loadResumeDefaults(settingsFile);
-  const recorded = useCurrentDefaults ? null : loadSessionSettings(s.file);
-  const settings = useCurrentDefaults ? defaults : {
+function buildHandoffDescriptor(s, executable = handoffHookExecutable) {
+  if (!executable) return undefined;
+  return createHandoffHookDescriptor(executable, {
+    id: s.id,
+    path: path.resolve(s.file),
+    title: s.title,
+    cwd: s.effectiveCwd,
+  });
+}
+
+function buildSelection(s, useCurrentDefaults = true, repaired = 0, settingsFile = SETTINGS_FILE, executable = handoffHookExecutable, backend = BACKEND) {
+  const defaults = backend === 'pi' ? loadResumeDefaults(settingsFile) : null;
+  const recorded = backend === 'pi' && !useCurrentDefaults ? loadSessionSettings(s.file) : null;
+  const settings = backend !== 'pi' ? null : (useCurrentDefaults ? defaults : {
     model: recorded?.model || defaults?.model || '',
     thinking: recorded?.thinking || defaults?.thinking || '',
-  };
+  });
+  const handoffHook = buildHandoffDescriptor(s, executable);
   return {
     version: 1,
     sessionPath: path.resolve(s.file),
-    resumeMode: useCurrentDefaults ? 'defaults' : 'session',
     ...(s.cwdOverride ? { cwdOverride: s.cwdOverride } : {}),
     ...(settings?.model ? { model: settings.model } : {}),
     ...(settings?.thinking ? { thinking: settings.thinking } : {}),
-    ...(repaired > 0 ? { repaired } : {}),
+    ...(backend === 'pi' && repaired > 0 ? { repaired } : {}),
+    ...(handoffHook ? { handoffHook } : {}),
   };
 }
 
@@ -1551,11 +1679,11 @@ function returnSelection(selection) {
   try {
     fs.writeSync(SELECT_FD, `${JSON.stringify(selection)}\n`);
   } catch (error) {
-    throw new Error(`could not return selection to pi: ${error.message}`);
+    throw new Error(`could not return selection to ${BACKEND_COMMAND}: ${error.message}`);
   }
 }
 
-function resumeSession(s, useCurrentDefaults = true) {
+async function resumeSession(s, useCurrentDefaults = true) {
   if (!s) return;
   // A resumed pi or the parent extension takes over this terminal, so stop
   // background title work and suppress its asynchronous final render.
@@ -1570,14 +1698,16 @@ function resumeSession(s, useCurrentDefaults = true) {
     process.exit(0);
   }
 
-  // Pi still preserves a valid unfinished toolCall without adding its missing
-  // result, so repair it before either native switching or standalone resume.
-  let repaired;
-  try { repaired = healOrphanedToolCalls(s.file); }
-  catch (error) {
-    leaveTui();
-    console.error(`pisesh: ${error.message}`);
-    process.exit(1);
+  // Upstream Pi needs interrupted tool calls repaired before replay. OMP owns
+  // its native transcript recovery, so its session files must remain read-only.
+  let repaired = 0;
+  if (BACKEND === 'pi') {
+    try { repaired = healOrphanedToolCalls(s.file); }
+    catch (error) {
+      leaveTui();
+      console.error(`pisesh: ${error.message}`);
+      process.exit(1);
+    }
   }
   leaveTui();
 
@@ -1591,17 +1721,26 @@ function resumeSession(s, useCurrentDefaults = true) {
     console.log(`pisesh: repaired ${repaired} orphaned session entr${repaired === 1 ? 'y' : 'ies'}; backup: ${s.file}.bak-orphanheal`);
   }
 
+  const handoffHook = buildHandoffDescriptor(s);
+  if (handoffHook) {
+    const result = await runHandoffHook(
+      handoffHook.executable,
+      buildHandoffPayload(handoffHook.session, 'cli'),
+    );
+    if (!result.ok) console.error(`pisesh: ${result.warning}`);
+  }
+
   // Resume in the session's effective cwd (user override wins over recorded),
   // falling back to pisesh's own cwd if that directory no longer exists.
   const targetCwd = s.effectiveCwd;
-  const child = spawn('pi', buildResumeArgs(s, useCurrentDefaults), {
+  const child = spawn(BACKEND_COMMAND, buildResumeArgs(s, useCurrentDefaults, SETTINGS_FILE, BACKEND), {
     stdio: 'inherit',
     cwd: targetCwd && fs.existsSync(targetCwd) ? targetCwd : process.cwd(),
-    env: PI_ENV,
+    env: BACKEND_ENV,
   });
   child.on('exit', code => process.exit(code || 0));
   child.on('error', err => {
-    console.error('Failed to spawn pi:', err.message);
+    console.error(`Failed to spawn ${BACKEND_COMMAND}:`, err.message);
     process.exit(1);
   });
 }
@@ -1619,10 +1758,13 @@ function quit() {
 
 // ── Main ──────────────────────────────────────────────
 function printHelp() {
-  console.log(`pisesh — pi session bookmarks & resume TUI
+  console.log(`pisesh — Pi / Oh My Pi session bookmarks & resume TUI
 
 Usage:
-  pisesh                 Open interactive TUI
+  pisesh                 Open Pi sessions (default, unchanged)
+  ompsesh                Open the active OMP session store
+  pisesh --omp           Same as ompsesh
+  pisesh --backend=pi|omp  Select a backend explicitly
   pisesh --list, -l      List starred session IDs (one per line)
   pisesh --json          Dump favorites file as JSON
   pisesh --star <id>     Add a session id (partial UUID ok) to favorites
@@ -1631,13 +1773,22 @@ Usage:
   pisesh --version, -v   Print the installed version
   pisesh --help, -h      This help
 
+Handoff hook:
+  pisesh --handoff-hook=/absolute/path   Await a trusted executable on resume
+  PISESH_HANDOFF_HOOK=/absolute/path pisesh
+  Use exactly one standalone --handoff-hook=<absolute path> token; CLI wins over
+  the environment. The hook receives one JSON line on stdin and no arguments.
+  Invalid CLI configuration fails; invalid environment configuration is ignored
+  with a warning. Hook failures warn and resume continues (no timeout/retry).
+  /sesh accepts the same exact equals form as one raw argument.
 TUI keys:
   ↑↓ / j k         move cursor
   Tab / h l        switch tab  (★ Favorites → Today → Here → All)
+  b                toggle Pi / OMP backend (standalone only)
   f / Space        toggle favorite
   x                remove favorites whose sessions no longer exist
-  Enter            resume with current default model and thinking settings
-  o                resume with the session-recorded model and thinking settings
+  Enter            resume (Pi defaults; OMP native session state)
+  o                resume with session-recorded state
   e                edit name (custom display title)
   g                queue title generation with the saved model + effort
                    (first use opens settings; active/queued threads are ignored)
@@ -1668,7 +1819,7 @@ function findIdMatch(prefix) {
 }
 
 function main() {
-  const argv = process.argv.slice(2);
+  const argv = CLI.args;
 
   if (argv.includes('-h') || argv.includes('--help')) { printHelp(); return; }
   if (argv.includes('-v') || argv.includes('--version')) { console.log(VERSION); return; }
@@ -1703,6 +1854,14 @@ function main() {
     favorites.delete(ids[0]); saveFavorites(favorites);
     console.log('☆ unstarred', ids[0]); return;
   }
+  try {
+    const resolved = resolveHandoffHook(argv);
+    handoffHookExecutable = resolved.executable;
+    if (resolved.warning) console.error(`pisesh: ${resolved.warning}`);
+  } catch (error) {
+    console.error(`pisesh: ${error.message}`);
+    process.exit(2);
+  }
 
   if (!process.stdin.isTTY) {
     console.error('pisesh: stdin is not a TTY (use a terminal to run the TUI). Try --list or --help.');
@@ -1710,7 +1869,7 @@ function main() {
   }
 
   sessions = scanSessions();
-  if (sessions.length === 0) {
+  if (sessions.length === 0 && SELECT_FD !== null) {
     console.error('pisesh: no sessions found under', SESSIONS_ROOT);
     process.exit(1);
   }
@@ -1728,9 +1887,15 @@ else module.exports = {
   healOrphanedToolCalls,
   loadResumeDefaults,
   loadSessionSettings,
+  modelListArgs,
+  parseBackendArgs,
   parseModelEntries,
   parseModelList,
   piAgentEnv,
+  readSessionMeta,
+  resolveBackendPaths,
+  resolveToggledBackendPaths,
+  scanSessions,
   takeGenerationBatch,
   titleGenerationArgs,
   titleGenerationBlocker,

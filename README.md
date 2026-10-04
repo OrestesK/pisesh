@@ -1,16 +1,15 @@
 # pisesh
 
-**English** | [한국어](https://github.com/Blue-B/pisesh/blob/main/docs/README.ko.md)
+**English** | [한국어 (upstream translation)](https://github.com/Blue-B/pisesh/blob/main/docs/README.ko.md)
 
-[![npm](https://img.shields.io/npm/v/pisesh?style=for-the-badge&logo=npm&color=CB3837&logoColor=white)](https://www.npmjs.com/package/pisesh)
-[![ci](https://img.shields.io/github/actions/workflow/status/Blue-B/pisesh/ci.yml?branch=main&style=for-the-badge&logo=github-actions&logoColor=white&label=CI)](https://github.com/Blue-B/pisesh/actions/workflows/ci.yml)
-[![license](https://img.shields.io/github/license/Blue-B/pisesh?style=for-the-badge&color=blue)](LICENSE)
+[![ci](https://img.shields.io/github/actions/workflow/status/OrestesK/pisesh/ci.yml?branch=main&style=for-the-badge&logo=github-actions&logoColor=white&label=CI)](https://github.com/OrestesK/pisesh/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/OrestesK/pisesh?style=for-the-badge&color=blue)](LICENSE)
 [![node](https://img.shields.io/badge/node-%E2%89%A518-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![deps](https://img.shields.io/badge/dependencies-0-brightgreen?style=for-the-badge)](package.json)
 
-**Bookmark, search, and resume [pi coding-agent](https://github.com/earendil-works/pi) sessions with a fast keyboard-driven TUI.**
+**Bookmark, search, and resume [Pi](https://github.com/earendil-works/pi) and Oh My Pi (OMP) sessions with a fast keyboard-driven TUI.**
 
-> `pi --resume` lists every session you ever started. After a week that's 50+ entries with no titles, no tags, and no order, so you just scroll and hope. pisesh adds what was missing: ⭐ favorites, instant search, and a `[NOW]` badge for the session you're attached to.
+> `pi --resume` and `omp --resume` list every session you ever started. After a week that's 50+ entries, so you just scroll and hope. pisesh adds what was missing: ⭐ favorites, instant search, native OMP titles, and a `[NOW]` badge for the session you're attached to.
 
 ## Preview
 
@@ -47,7 +46,7 @@ Pi accumulates sessions across many working directories: your home, several proj
 - You re-open the wrong session and pollute it with unrelated context
 - You waste time searching by timestamp guessing
 
-pisesh is a **single-file Node script** (no dependencies, ~1,600 LoC) that gives you everything `pi --resume` doesn't.
+pisesh is a **zero-dependency Node CLI and Pi-compatible extension** that gives you everything `pi --resume` doesn't.
 
 ### Value at a glance
 
@@ -67,35 +66,43 @@ pisesh is a **single-file Node script** (no dependencies, ~1,600 LoC) that gives
 
 ## Getting started
 
-### Install the `/sesh` command in pi (recommended)
+This fork's OMP support is available from the source on [OrestesK/pisesh `main`](https://github.com/OrestesK/pisesh/tree/main). The `pisesh` package on npm is the **upstream release**, not this fork: `pi install npm:pisesh` and `npm install -g pisesh` do not install this fork's OMP support.
+
+### Get the fork from source
 
 ```bash
-pi install npm:pisesh
-```
-
-This registers pisesh as a pi extension. Inside any pi session, type `/sesh`. The extension runs its bundled CLI, so a global npm installation is not required.
-
-`/sesh` does not start a second pi process. The picker returns the selected session and options to the extension, which calls pi's official `ctx.switchSession()` API. Standalone `pisesh` keeps its shell behavior and starts `pi --session`. Custom cwd overrides require a pi version that supports `cwdOverride` on extension session switches; pisesh warns if pi ignores one.
-
-### Install the standalone CLI
-
-```bash
-npm install -g pisesh
-pisesh
-```
-
-The standalone `pisesh` shell command requires this global npm installation. It is separate from `pi install npm:pisesh`.
-
-### From source (developers)
-
-```bash
-git clone https://github.com/Blue-B/pisesh.git
+git clone https://github.com/OrestesK/pisesh.git
 cd pisesh
-npm link            # symlink ./bin/pisesh into your global PATH
+npm link            # link this checkout's pisesh and ompsesh commands into your PATH
 pisesh --help
+ompsesh --help
 ```
 
-For local pi testing, run `pi install .` from the cloned repository so the extension and its bundled CLI stay together.
+If this repository is already checked out as an OMP config submodule, use that package directory instead of cloning again (for example, `cd ~/.config/omp/agent/packages/pisesh`), then run `npm link` there. No global link is needed to invoke the source directly from either directory: `node bin/pisesh` opens Pi sessions, and `node bin/pisesh --omp` opens OMP sessions. `ompsesh` is equivalent to `pisesh --omp`; `pisesh --backend=pi|omp` selects explicitly.
+
+### Install the `/sesh` command in Pi
+
+From the source package directory (standalone checkout or config submodule):
+
+```bash
+pi install .
+```
+
+This registers the local package as a Pi extension. Inside a Pi session, type `/sesh`. The extension runs its bundled CLI, so `npm link` is not required for the slash command.
+
+`/sesh` does not start a second Pi process. The picker returns the selected session and options to the extension, which calls Pi's official `ctx.switchSession()` API. Standalone `pisesh` keeps its shell behavior and starts `pi --session`. Custom cwd overrides require a Pi version that supports `cwdOverride` on extension session switches; pisesh warns if Pi ignores one.
+
+### Use with Oh My Pi (OMP)
+
+With the source-linked CLI, run `ompsesh` (or `pisesh --omp`) to browse the active OMP profile's sessions. Without `npm link`, run `node bin/pisesh --omp` from the source package directory.
+
+To add `/sesh` to OMP, append an entry for this package directory under the existing `extensions:` list in your OMP `config.yml` (for example, `~/.config/omp/agent/config.yml`). Use the package's absolute path, whether it is a standalone checkout or the config submodule at `~/.config/omp/agent/packages/pisesh`. Keep all other extension entries; do not replace the list with a single-package `omp config set extensions` command.
+
+OMP loads the Pi-compatible extension through its compatibility layer. The picker uses OMP's active profile directory and native titles, switches sessions through OMP's `ctx.switchSession()`, and standalone resume launches `omp --resume`. It never applies Pi's JSON defaults or orphan-call transcript repair to OMP sessions.
+
+While either standalone TUI is open, press `b` to switch between Pi and OMP without restarting pisesh. Each backend keeps its own favorites, metadata, and title-generation settings. The `/sesh` picker remains pinned to the Pi or OMP process that opened it.
+
+The upstream npm release remains available for its own behavior, but it is not the installation path for this fork's OMP support.
 
 ## Keys
 
@@ -103,10 +110,11 @@ For local pi testing, run `pi install .` from the cloned repository so the exten
 | ---------------------------- | ------------------------------------------------------------ |
 | `↑` `↓` / `j` `k`            | move cursor                                                  |
 | `Tab` / `h` / `l`            | switch tab (`★ Favorites` → `Today` → `Here` → `All`)         |
+| `b`                           | switch between Pi and OMP (standalone TUI only)              |
 | `f` / `Space`                | star / unstar the selected session                           |
 | `x`                          | remove favorites whose session files no longer exist         |
-| `Enter`                      | resume using the current default model and thinking settings  |
-| `o`                          | resume using the model and thinking recorded in the session   |
+| `Enter`                      | resume using Pi defaults or OMP's native session state         |
+| `o`                          | resume using recorded state (equivalent to `Enter` for OMP)    |
 | `e`                          | edit name: set a custom display title, shown with `✎` in the list |
 | `g`                          | queue title generation with the saved model and effort; clear a manual title with `e` first |
 | `G`                          | open title-generation settings to choose the saved model + effort |
@@ -126,7 +134,9 @@ Title generation sends up to 16 KB of session text to the selected model provide
 For scripts and automation:
 
 ```bash
-pisesh --list                  # print starred session IDs (one per line)
+pisesh --list                  # Pi favorites
+ompsesh --list                 # OMP favorites
+pisesh --omp                   # open the OMP picker
 pisesh --json                  # full favorites file as JSON
 pisesh --star <partial-uuid>   # star a session from a script
 pisesh --unstar <partial-uuid> # unstar
@@ -134,6 +144,20 @@ pisesh --clean-favorites       # remove favorites whose sessions are gone
 pisesh --version               # print installed version
 pisesh --help
 ```
+
+### Optional handoff hook
+
+Standalone resume accepts one exact `--handoff-hook=<absolute path>` token. The same executable can be configured with `PISESH_HANDOFF_HOOK`; an explicit CLI token wins, and a duplicate or invalid CLI token fails. Invalid environment configuration is warned about and disabled. `/sesh` accepts either empty raw arguments or one exact `--handoff-hook=<absolute path>` form; everything after the first `=` is path data, including spaces and option-like text. Quotes, shell escaping, and repeated options are not parsed.
+
+After any required Pi-only repair and before standalone backend spawn, or after a committed `/sesh` session shutdown and before replacement extensions load, pisesh invokes the hook once and awaits it. The picker never invokes it. Same-session selections, cancellation, failed repair, and disabled configuration do not invoke it. A hook failure (launch, stdin, signal, or nonzero exit) produces one bounded warning and resume continues. There is deliberately no timeout, retry, response, or rollback; a trusted hook may delay handoff and its effects are not undone if the backend later fails.
+
+The trusted executable receives inherited environment data and one JSON line on stdin, with no arguments and `shell: false`. Hook stdout is ignored:
+
+```json
+{"version":1,"event":"handoff","source":"cli","session":{"id":"...","path":"/absolute/session.jsonl","title":"...","cwd":"..."}}
+```
+
+`source` is `"cli"` for standalone pisesh and `"sesh"` for the slash command. `title` is pisesh's exact resolved title and `cwd` is the selected row's `effectiveCwd` metadata (override, recorded cwd, or the existing decoded-project-label/flat-directory fallback); it is not a guarantee of runtime process cwd. The payload excludes model, thinking, repair count, and backend details. This interface is backend-neutral: pisesh does not know or invoke tmux, Moshi, Zellij, naming templates, or adapters. Session path and title data may be sensitive, and the inherited environment may contain credentials, so configure only trusted local executables.
 
 ## Tech Stack
 
@@ -146,13 +170,13 @@ pisesh --help
 | Alt screen buffer   | `\x1b[?1049h` / `\x1b[?1049l`, the same primitive `vim`, `less`, `htop`, and droid CLI use         |
 | Input               | Node's `readline.emitKeypressEvents` in raw mode                                                 |
 | Width calculation   | UAX #11 East Asian Width ranges, compressed to ~10 inline range checks                           |
-| Pi extension        | TypeScript factory using `ui.custom`, `tui.stop`, and `ctx.switchSession()`                       |
-| Storage             | Two JSON files under `$PI_AGENT_DIR`: `favorites.json` and `pisesh-meta.json`                 |
-| Session discovery   | Direct filesystem scan of `~/.pi/agent/sessions/<projectSlug>/*.jsonl`; first 96 KB parsed       |
-| Process model       | `/sesh` runs pisesh as a selector and switches the current runtime; standalone starts `pi`        |
-| Resume settings     | `Enter` uses current defaults; `o` preserves the model and thinking recorded in the session         |
-| Custom paths        | Honors `PI_AGENT_DIR` and `PI_SESSION_DIR`, including a flat custom session directory                |
-| Title generation    | Ephemeral `pi --print --no-session` call using the model and effort selected in pisesh            |
+| Pi/OMP extension    | Pi-compatible TypeScript factory using `ui.custom`, `tui.stop`, and `ctx.switchSession()`          |
+| Storage             | Separate favorites and override sidecars under the active Pi or OMP agent directory              |
+| Session discovery   | Direct scan of the selected backend's session root; first 96 KB of each JSONL parsed             |
+| Process model       | `/sesh` switches the current host; standalone launches `pi` or `omp --resume`                    |
+| Resume settings     | Pi supports default/recorded choices; OMP restores its native session state                       |
+| Custom paths        | Honors each backend's native agent, session, config, and profile environment variables           |
+| Title generation    | Ephemeral `pi` or `omp --print --no-session` call using the selected model and effort            |
 
 ### What it explicitly does **not** depend on
 
@@ -163,12 +187,13 @@ pisesh --help
 
 ## Storage
 
-| What       | Where                                                       |
-| ---------- | ----------------------------------------------------------- |
-| Favorites  | `$PI_AGENT_DIR/favorites.json` (defaults to `~/.pi/agent/favorites.json`) |
-| Overrides  | `$PI_AGENT_DIR/pisesh-meta.json` (per-session title / cwd plus the saved title model + effort preset) |
-| Sessions   | `$PI_SESSION_DIR`, or `$PI_AGENT_DIR/sessions` by default (repaired only when an orphaned tool call would break resume) |
+| What       | Pi default                                                  | OMP default                                                     |
+| ---------- | ----------------------------------------------------------- | --------------------------------------------------------------- |
+| Favorites  | `~/.pi/agent/favorites.json`                                | `~/.config/omp/agent/favorites.json`                             |
+| Overrides  | `~/.pi/agent/pisesh-meta.json`                              | `~/.config/omp/agent/pisesh-meta.json`                           |
+| Sessions   | `~/.pi/agent/sessions`                                      | active OMP profile's `agent/sessions`                            |
 
+Pi accepts `PI_AGENT_DIR` / `PI_SESSION_DIR`; OMP accepts `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`, `OMP_PROFILE` (or `PI_PROFILE`), and `PI_CONFIG_DIR`. Pi orphan-call repair may update a selected transcript with a one-time backup. OMP transcripts are never rewritten.
 Favorites file shape:
 
 ```json
@@ -207,7 +232,7 @@ Korean / Chinese / Japanese / fullwidth characters render **2 cells wide** in te
 ## Contributing
 
 ```bash
-git clone https://github.com/Blue-B/pisesh.git
+git clone https://github.com/OrestesK/pisesh.git
 cd pisesh
 npm link
 npm test        # node --check + smoke test

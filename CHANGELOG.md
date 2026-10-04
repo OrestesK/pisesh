@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- Add an optional generic handoff hook configured by one absolute `--handoff-hook=<path>` token or `PISESH_HANDOFF_HOOK`. Standalone and `/sesh` resume paths deliver one awaited version-1 JSON event to a trusted executable, fail open with bounded warnings, and remain backend-neutral.
+- Add first-class OMP support through `ompsesh` / `pisesh --omp` and the shared `/sesh` extension: discover active OMP profiles, show native titles, use OMP model/title commands, and resume with `omp --resume` without Pi settings injection or transcript repair.
+- Let standalone pisesh toggle live between Pi and OMP with `b`, including independent favorites, metadata, settings, and empty-backend startup; keep `/sesh` pinned to its host runtime.
+
 ## [0.3.0] - 2026-08-22
 
 ### Changed

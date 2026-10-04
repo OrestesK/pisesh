@@ -1,10 +1,12 @@
 {
   "name": "pisesh",
   "version": "0.3.0",
-  "description": "Bookmark, search, and resume pi coding-agent sessions with a fast keyboard-driven TUI.",
+  "description": "Bookmark, search, and resume Pi and Oh My Pi coding-agent sessions with a fast keyboard-driven TUI.",
   "keywords": [
     "pi-package",
     "pi",
+    "omp",
+    "oh-my-pi",
     "pi-coding-agent",
     "session",
     "bookmark",
@@ -15,23 +17,25 @@
     "resume",
     "favorites"
   ],
-  "homepage": "https://github.com/Blue-B/pisesh#readme",
+  "homepage": "https://github.com/OrestesK/pisesh#readme",
   "bugs": {
-    "url": "https://github.com/Blue-B/pisesh/issues"
+    "url": "https://github.com/OrestesK/pisesh/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Blue-B/pisesh.git"
+    "url": "git+https://github.com/OrestesK/pisesh.git"
   },
   "license": "MIT",
   "author": "Blue-B <source_vs@naver.com>",
   "type": "commonjs",
   "bin": {
-    "pisesh": "bin/pisesh"
+    "pisesh": "bin/pisesh",
+    "ompsesh": "bin/pisesh"
   },
   "files": [
     "bin/",
     "extensions/",
+    "lib/",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
@@ -43,7 +47,7 @@
     "extensions": [
       "./extensions/sesh.ts"
     ],
-    "image": "https://raw.githubusercontent.com/Blue-B/pisesh/main/assets/preview.png"
+    "image": "https://raw.githubusercontent.com/OrestesK/pisesh/main/assets/preview.png"
   },
   "scripts": {
     "test": "node --check bin/pisesh && node --test test/*.test.js",
