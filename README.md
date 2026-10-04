@@ -2,7 +2,6 @@
 
 **English** | [한국어 (upstream translation)](https://github.com/Blue-B/pisesh/blob/main/docs/README.ko.md)
 
-[![ci](https://img.shields.io/github/actions/workflow/status/OrestesK/pisesh/ci.yml?branch=main&style=for-the-badge&logo=github-actions&logoColor=white&label=CI)](https://github.com/OrestesK/pisesh/actions/workflows/ci.yml)
 [![license](https://img.shields.io/github/license/OrestesK/pisesh?style=for-the-badge&color=blue)](LICENSE)
 [![node](https://img.shields.io/badge/node-%E2%89%A518-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![deps](https://img.shields.io/badge/dependencies-0-brightgreen?style=for-the-badge)](package.json)
